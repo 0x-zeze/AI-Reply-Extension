@@ -5,7 +5,7 @@
 
   <p>
     <img src="https://img.shields.io/badge/Manifest-V3-1d9bf0?style=flat-square" alt="Manifest V3" />
-    <img src="https://img.shields.io/badge/Version-4.0-4f46e5?style=flat-square" alt="Version 4.0" />
+    <img src="https://img.shields.io/badge/Version-4.1-4f46e5?style=flat-square" alt="Version 4.1" />
     <img src="https://img.shields.io/badge/UI-Auto_Dark%2FLight_60fps-10b981?style=flat-square" alt="60fps UI" />
     <img src="https://img.shields.io/badge/API-OpenAI_Compatible-7c3aed?style=flat-square" alt="OpenAI Compatible" />
   </p>

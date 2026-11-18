@@ -670,6 +670,77 @@ function extractDomLang(primaryNode, root, excludeScope) {
   return "";
 }
 
+// Deteksi jika post di X sedang dalam kondisi sudah diterjemahkan ("Translated from Japanese" / "Diterjemahkan dari Jepang")
+const TRANSLATED_LANG_NAME_MAP = {
+  japanese: "ja",
+  jepang: "ja",
+  chinese: "zh-cn",
+  "simplified chinese": "zh-cn",
+  "traditional chinese": "zh-tw",
+  mandarin: "zh-cn",
+  tionghoa: "zh-cn",
+  cina: "zh-cn",
+  korean: "ko",
+  korea: "ko",
+  indonesian: "id",
+  indonesia: "id",
+  english: "en",
+  inggris: "en",
+  arabic: "ar",
+  arab: "ar",
+  russian: "ru",
+  rusia: "ru",
+  ukrainian: "uk",
+  ukraina: "uk",
+  thai: "th",
+  thailand: "th",
+  hindi: "hi",
+  vietnamese: "vi",
+  vietnam: "vi",
+  spanish: "es",
+  spanyol: "es",
+  portuguese: "pt",
+  portugis: "pt",
+  french: "fr",
+  prancis: "fr",
+  german: "de",
+  jerman: "de",
+  turkish: "tr",
+  turki: "tr",
+  italian: "it",
+  italia: "it",
+  dutch: "nl",
+  belanda: "nl",
+  polish: "pl",
+  polandia: "pl",
+  tagalog: "tl",
+  filipino: "tl",
+  malay: "ms",
+  melayu: "ms",
+};
+
+function extractTranslatedFromLang(root, excludeScope) {
+  if (!root || typeof root.querySelectorAll !== "function") return "";
+  const nodes = root.querySelectorAll("span, div, button");
+  for (const el of nodes) {
+    if (excludeScope && excludeScope.contains(el)) continue;
+    if (el.children && el.children.length > 4) continue;
+    const t = cleanText(el.innerText);
+    if (!t || t.length > 90) continue;
+
+    const m =
+      t.match(/\bTranslated from\s+([A-Za-z\s()-]+?)(?:\s+by\b|$)/i) ||
+      t.match(/\bDiterjemahkan dari(?:\s+bahasa)?\s+([A-Za-z\s()-]+?)(?:\s+oleh\b|$)/i);
+    if (m && m[1]) {
+      const key = m[1].replace(/[()]/g, "").trim().toLowerCase();
+      if (TRANSLATED_LANG_NAME_MAP[key]) return TRANSLATED_LANG_NAME_MAP[key];
+      const firstWord = key.split(/\s+/)[0];
+      if (TRANSLATED_LANG_NAME_MAP[firstWord]) return TRANSLATED_LANG_NAME_MAP[firstWord];
+    }
+  }
+  return "";
+}
+
 function extractDataFromArticle(article) {
   if (!article) return null;
 
@@ -687,6 +758,7 @@ function extractDataFromArticle(article) {
   }
 
   const tweetLang = extractDomLang(mainTextNode, article, quoteRoot);
+  const translatedFromLang = extractTranslatedFromLang(article, quoteRoot);
   const { name, handle } = parseUserBlock(article, quoteRoot);
   const pollOptions = extractPollOptions(article, quoteRoot);
   const cardSummary = extractCardSummary(article, quoteRoot);
@@ -730,6 +802,7 @@ function extractDataFromArticle(article) {
     handle,
     tweetText: truncateAtWord(tweetText, 650),
     tweetLang,
+    translatedFromLang,
     articleTitle: longform.title,
     pollOptions,
     quotedText,
@@ -779,6 +852,7 @@ function extractContextFromDialogNonArticle(dialog, replyBox) {
   const targetTextEl = candidates[0] || null;
   const tweetText = extractNodeTextWithEmojis(targetTextEl);
   const tweetLang = extractDomLang(targetTextEl, scope, composerWrap);
+  const translatedFromLang = extractTranslatedFromLang(scope, composerWrap);
   const { name, handle } = parseUserBlock(scope, composerWrap);
   const pollOptions = extractPollOptions(scope, composerWrap);
   const cardSummary = extractCardSummary(scope, composerWrap);
@@ -790,6 +864,7 @@ function extractContextFromDialogNonArticle(dialog, replyBox) {
     handle,
     tweetText: truncateAtWord(tweetText, 650),
     tweetLang,
+    translatedFromLang,
     articleTitle: "",
     pollOptions,
     quotedText: "",
@@ -808,6 +883,7 @@ function getPostContext(replyBox) {
     handle: "",
     tweetText: "",
     tweetLang: "",
+    translatedFromLang: "",
     articleTitle: "",
     pollOptions: "",
     quotedText: "",
@@ -865,17 +941,37 @@ function getPostContext(replyBox) {
     }
   }
 
-  // 3. Halaman detail thread (/status/...) — ambil tweet tepat di atas kotak balasan + konteks thread sebelumnya
-  const boxRect = replyBox.getBoundingClientRect();
+  // 3. Halaman detail status (/status/<id>) — utamakan focal tweet utama (tabindex="-1" atau permalink status)
+  //    agar tidak pernah meleset mengambil parent tweet di atasnya saat tinggi elemen overlap!
   const allTweets = [...document.querySelectorAll('article[data-testid="tweet"]')];
+  const statusMatch = location.pathname.match(/\/status\/(\d+)/);
+  if (statusMatch) {
+    const statusId = statusMatch[1];
+    const mainFocalTweet =
+      document.querySelector('article[tabindex="-1"]') ||
+      allTweets.find((art) => art.querySelector(`a[href*="/status/${statusId}"]`));
+    if (mainFocalTweet) {
+      const extracted = extractDataFromArticle(mainFocalTweet);
+      if (extracted) {
+        if (!extracted.replyTo && composerReplyTo) extracted.replyTo = composerReplyTo;
+        const focalIdx = allTweets.indexOf(mainFocalTweet);
+        if (focalIdx > 0) {
+          extracted.parentContext = buildParentThreadSummary(allTweets.slice(0, focalIdx));
+        }
+        return extracted;
+      }
+    }
+  }
 
+  // 4. Fallback: cari tweet terdekat di atas kotak balasan
+  const boxRect = replyBox.getBoundingClientRect();
   let bestIdx = -1;
   let minDistance = Infinity;
 
   for (let i = 0; i < allTweets.length; i++) {
     const rect = allTweets[i].getBoundingClientRect();
     const dist = boxRect.top - rect.bottom;
-    if (dist >= -40 && dist < minDistance) {
+    if (dist >= -80 && dist < minDistance) {
       minDistance = dist;
       bestIdx = i;
     }
@@ -889,24 +985,6 @@ function getPostContext(replyBox) {
         extracted.parentContext = buildParentThreadSummary(allTweets.slice(0, bestIdx));
       }
       return extracted;
-    }
-  }
-
-  // 4. Fallback ke focal tweet di halaman detail status
-  if (/\/status\/\d+/.test(location.pathname)) {
-    const mainFocalTweet =
-      document.querySelector('article[tabindex="-1"]') ||
-      document.querySelector('article[data-testid="tweet"]');
-    if (mainFocalTweet) {
-      const extracted = extractDataFromArticle(mainFocalTweet);
-      if (extracted) {
-        if (!extracted.replyTo && composerReplyTo) extracted.replyTo = composerReplyTo;
-        const focalIdx = allTweets.indexOf(mainFocalTweet);
-        if (focalIdx > 0) {
-          extracted.parentContext = buildParentThreadSummary(allTweets.slice(0, focalIdx));
-        }
-        return extracted;
-      }
     }
   }
 
@@ -950,7 +1028,7 @@ function shouldInjectForBox(box, container) {
   return false;
 }
 
-function setButtonVisualState(btn, state) {
+function setButtonVisualState(btn, state, langCode = "") {
   if (!btn) return;
   if (state === "loading") {
     btn.dataset.loading = "true";
@@ -959,7 +1037,11 @@ function setButtonVisualState(btn, state) {
   } else if (state === "done") {
     delete btn.dataset.loading;
     btn.dataset.state = "done";
-    btn.innerHTML = `${CHECK_SVG}<span>Done</span>`;
+    const shortLang =
+      langCode && langCode !== "same"
+        ? ` · ${String(langCode).split("-")[0].toUpperCase()}`
+        : "";
+    btn.innerHTML = `${CHECK_SVG}<span>Done${shortLang}</span>`;
   } else {
     delete btn.dataset.loading;
     delete btn.dataset.state;
@@ -1202,12 +1284,12 @@ async function generateText(box, btn, mountContainer) {
     }
 
     succeeded = true;
-    setButtonVisualState(btn, "done");
+    setButtonVisualState(btn, "done", result.detectedLang);
     setTimeout(() => {
       if (btn && btn.isConnected && btn.dataset.loading !== "true") {
         setButtonVisualState(btn, "idle");
       }
-    }, 1200);
+    }, 1400);
   } catch (err) {
     console.error("[Yap Extension] Error:", err);
     const msg = err?.message || String(err);

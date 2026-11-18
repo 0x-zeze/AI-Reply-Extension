@@ -1,5 +1,5 @@
 // Background service worker - proxy API call supaya bebas CORS / mixed-content.
-// Anti-Halu, Multilingual Engine (ID, EN, ZH-CN, ZH-TW, JA, KO, AR, RU, TH, VI, ES, dll.),
+// Anti-Halu, Guaranteed Multilingual Engine (Single-System Prompt + Native Cue + Auto-Rewrite Guard),
 // Context & Intent Classifier, Smart Entity Anchor, dan Auto-Fallback Reasoning.
 
 const API_TIMEOUT_MS = 60000;
@@ -14,15 +14,14 @@ function normalizeTimeout(value) {
   return Math.min(Math.max(Math.round(n), MIN_TIMEOUT_MS), MAX_TIMEOUT_MS);
 }
 
-// Unambiguous Indonesian stopwords & casual slang
+// Unambiguous Indonesian stopwords & everyday vocabulary
 const ID_STOP =
-  /\b(yang|yg|dan|ini|itu|tidak|nggak|gak|ga|ngga|dengan|dgn|untuk|utk|dari|dr|ada|akan|sudah|udah|udh|belum|blm|bisa|juga|jg|saya|aku|gue|gw|kamu|lu|elu|dia|mereka|kita|kami|adalah|karena|krn|kalau|kalo|kl|jadi|jd|pada|atau|lebih|hanya|cuma|sangat|banget|bgt|hari|bukan|loh|lho|sih|dong|nih|tuh|kok|lah|kah|aja|saja|mau|lagi|lg|masih|baru|bikin|pakai|pake|lihat|liat|tahu|tau|gimana|gitu|gini|tapi|tp|memang|emang|kayak|kaya|buat|terus|trs|pas|banyak|semua|orang|kenapa|kapan|dimana|siapa|bagaimana|mantap|keren|parah|anjir|wkwk|wkwkwk|cuy|gan|bang|kak)\b/g;
+  /\b(yang|yg|dan|ini|itu|tidak|nggak|gak|ga|ngga|dengan|dgn|untuk|utk|dari|dr|ada|akan|sudah|udah|udh|belum|blm|bisa|juga|jg|saya|aku|gue|gw|kamu|lu|elu|kalian|dia|mereka|kita|kami|adalah|karena|krn|kalau|kalo|kl|jadi|jd|pada|atau|lebih|hanya|cuma|sangat|banget|bgt|hari|bukan|loh|lho|sih|dong|nih|tuh|kok|lah|kah|aja|saja|mau|lagi|lg|masih|baru|bikin|pakai|pake|lihat|liat|tahu|tau|gimana|gitu|gini|tapi|tp|memang|emang|kayak|kaya|buat|terus|trs|pas|banyak|semua|orang|kenapa|kapan|dimana|siapa|bagaimana|mantap|keren|parah|anjir|wkwk|wkwkwk|cuy|gan|bang|kak|sekarang|kemarin|besok|makin|paling|jangan|harus|perlu|mungkin|pasti|selalu|pernah|tanpa|sampai|sejak|mulai|cuan|nyangkut|serok|gokil|santuy|bener|benar|bagus|cepat|mahal|murah|beli|jual|dapet|dapat|punya|bilang)\b/g;
 
 // Distinctive English stopwords & common X/CT vocabulary
 const EN_STOP =
   /\b(the|and|is|are|was|were|be|been|being|to|of|for|with|at|by|from|into|over|after|before|about|between|through|during|without|under|again|further|then|once|here|there|when|where|why|how|all|any|both|each|few|more|most|other|some|such|nor|not|only|own|same|than|too|very|can|will|just|should|now|that|this|these|those|what|which|who|whom|whose|you|your|yours|we|our|they|their|them|it|its|he|him|his|she|her|my|have|has|had|having|do|does|did|doing|would|could|might|must|shall|but|if|because|until|while|out|up|down|off|get|got|make|made|new|good|great|best|still|even|back|really|think|know|see|look|looks|looking|going|never|always|every|next|last|first|people|time|year|day|week|way|work|need|want|right|well|much|many|bullish|bearish|market|chart|launch|live|update|building|build|shipping|breaking|massive|strong|landing|makes|worth|watching)\b/g;
 
-// Morfologi khas bahasa Indonesia
 const ID_MORPH =
   /\b(?:(?:me|ber|ter|pe|ke|se|di)[a-z]{3,}(?:kan|nya|lah)|[a-z]{3,}nya|wkwk\w*)\b/g;
 
@@ -32,42 +31,41 @@ const TRAD_HANZI =
 const SIMP_HANZI =
   /[这们来个说对还没发动现实际网币链涨跌稳开关与为无会体国经见长门问间时机电买卖点头后里让从进着样种东车书学义]/g;
 
-// Stopwords ringan untuk bahasa Latin populer di X
-const ES_STOP = /\b(el|la|los|las|una|unos|unas|pero|como|para|por|está|están|este|esta|estos|estas|muy|más|todo|todos|puede|hace|sobre|cuando|porque|también|solo|siempre)\b/g;
-const PT_STOP = /\b(uma|uns|umas|não|está|estão|isso|isto|muito|mais|tudo|todos|pode|sobre|quando|porque|também|ainda|agora|você|vocês|pelos|pelas)\b/g;
-const FR_STOP = /\b(les|des|une|dans|pour|pas|sur|avec|sont|cette|mais|plus|tout|tous|comme|c'est|quand|parce|aussi|même|très|bien)\b/g;
-const DE_STOP = /\b(der|die|das|und|nicht|mit|auf|für|ist|sind|eine|einer|einem|auch|noch|wird|werden|aber|oder|wenn|über|mehr|sehr)\b/g;
-const TR_STOP = /\b(bir|ve|bu|için|ile|olan|olarak|daha|çok|गibi|gibi|ama|fakat|kadar|sonra|önce|var|yok|bunu|şunu|nasıl|neden)\b/g;
+// Stopwords ringan bahasa Latin populer di X
+const ES_STOP = /\b(el|la|los|las|una|unos|unas|pero|como|para|por|está|están|este|esta|estos|estas|muy|más|todo|todos|puede|hace|sobre|cuando|porque|también|solo|siempre|ahora|mercado|mejor)\b/g;
+const PT_STOP = /\b(uma|uns|umas|não|está|estão|isso|isto|muito|mais|tudo|todos|pode|sobre|quando|porque|também|ainda|agora|você|vocês|pelos|pelas|melhor)\b/g;
+const FR_STOP = /\b(les|des|une|dans|pour|pas|sur|avec|sont|cette|mais|plus|tout|tous|comme|c'est|quand|parce|aussi|même|très|bien|toujours)\b/g;
+const DE_STOP = /\b(der|die|das|und|nicht|mit|auf|für|ist|sind|eine|einer|einem|auch|noch|wird|werden|aber|oder|wenn|über|mehr|sehr|jetzt)\b/g;
+const TR_STOP = /\b(bir|ve|bu|için|ile|olan|olarak|daha|çok|gibi|ama|fakat|kadar|sonra|önce|var|yok|bunu|şunu|nasıl|neden|şimdi)\b/g;
 
-// Peta kode atribut lang="..." dari DOM X (<div data-testid="tweetText" lang="...">)
 const DOM_LANG_MAP = {
-  en: { label: "English", code: "en" },
-  id: { label: "Indonesian", code: "id" },
-  in: { label: "Indonesian", code: "id" },
-  ja: { label: "Japanese (日本語)", code: "ja", cjk: true },
-  ko: { label: "Korean (한국어)", code: "ko", korean: true },
-  zh: { label: "Simplified Chinese (简体中文)", code: "zh-CN", cjk: true },
-  "zh-cn": { label: "Simplified Chinese (简体中文)", code: "zh-CN", cjk: true },
-  "zh-hans": { label: "Simplified Chinese (简体中文)", code: "zh-CN", cjk: true },
-  "zh-tw": { label: "Traditional Chinese (繁體中文)", code: "zh-TW", cjk: true },
-  "zh-hk": { label: "Traditional Chinese (繁體中文)", code: "zh-TW", cjk: true },
-  "zh-hant": { label: "Traditional Chinese (繁體中文)", code: "zh-TW", cjk: true },
-  ru: { label: "Russian (Русский)", code: "ru", nonLatin: true },
-  uk: { label: "Ukrainian (Українська)", code: "uk", nonLatin: true },
-  ar: { label: "Arabic (العربية)", code: "ar", nonLatin: true },
-  th: { label: "Thai (ภาษาไทย)", code: "th", nonLatin: true },
-  hi: { label: "Hindi (हिन्दी)", code: "hi", nonLatin: true },
-  vi: { label: "Vietnamese (Tiếng Việt)", code: "vi" },
-  es: { label: "Spanish (Español)", code: "es" },
-  pt: { label: "Portuguese (Português)", code: "pt" },
-  fr: { label: "French (Français)", code: "fr" },
-  de: { label: "German (Deutsch)", code: "de" },
-  tr: { label: "Turkish (Türkçe)", code: "tr" },
-  it: { label: "Italian (Italiano)", code: "it" },
-  nl: { label: "Dutch (Nederlands)", code: "nl" },
-  pl: { label: "Polish (Polski)", code: "pl" },
-  tl: { label: "Tagalog / Filipino", code: "tl" },
-  ms: { label: "Malay (Bahasa Melayu)", code: "ms" },
+  en: { label: "English", nativeName: "English", code: "en" },
+  id: { label: "Indonesian", nativeName: "Bahasa Indonesia", code: "id" },
+  in: { label: "Indonesian", nativeName: "Bahasa Indonesia", code: "id" },
+  ja: { label: "Japanese", nativeName: "日本語", code: "ja", cjk: true, nonLatin: true },
+  ko: { label: "Korean", nativeName: "한국어", code: "ko", korean: true, nonLatin: true },
+  zh: { label: "Simplified Chinese", nativeName: "简体中文", code: "zh-CN", cjk: true, nonLatin: true },
+  "zh-cn": { label: "Simplified Chinese", nativeName: "简体中文", code: "zh-CN", cjk: true, nonLatin: true },
+  "zh-hans": { label: "Simplified Chinese", nativeName: "简体中文", code: "zh-CN", cjk: true, nonLatin: true },
+  "zh-tw": { label: "Traditional Chinese", nativeName: "繁體中文", code: "zh-TW", cjk: true, nonLatin: true },
+  "zh-hk": { label: "Traditional Chinese", nativeName: "繁體中文", code: "zh-TW", cjk: true, nonLatin: true },
+  "zh-hant": { label: "Traditional Chinese", nativeName: "繁體中文", code: "zh-TW", cjk: true, nonLatin: true },
+  ru: { label: "Russian", nativeName: "Русский", code: "ru", nonLatin: true },
+  uk: { label: "Ukrainian", nativeName: "Українська", code: "uk", nonLatin: true },
+  ar: { label: "Arabic", nativeName: "العربية", code: "ar", nonLatin: true },
+  th: { label: "Thai", nativeName: "ภาษาไทย", code: "th", nonLatin: true },
+  hi: { label: "Hindi", nativeName: "हिन्दी", code: "hi", nonLatin: true },
+  vi: { label: "Vietnamese", nativeName: "Tiếng Việt", code: "vi" },
+  es: { label: "Spanish", nativeName: "Español", code: "es" },
+  pt: { label: "Portuguese", nativeName: "Português", code: "pt" },
+  fr: { label: "French", nativeName: "Français", code: "fr" },
+  de: { label: "German", nativeName: "Deutsch", code: "de" },
+  tr: { label: "Turkish", nativeName: "Türkçe", code: "tr" },
+  it: { label: "Italian", nativeName: "Italiano", code: "it" },
+  nl: { label: "Dutch", nativeName: "Nederlands", code: "nl" },
+  pl: { label: "Polish", nativeName: "Polski", code: "pl" },
+  tl: { label: "Tagalog", nativeName: "Tagalog", code: "tl" },
+  ms: { label: "Malay", nativeName: "Bahasa Melayu", code: "ms" },
 };
 
 function countMatches(re, text) {
@@ -113,60 +111,49 @@ function detectTweetLanguage(text, domLangHint = "") {
   if (!raw) {
     return normDom
       ? DOM_LANG_MAP[normDom]
-      : { label: "the exact same language as the target post", code: "same" };
+      : { label: "the exact same language as the target post", nativeName: "Same Language", code: "same" };
   }
 
   const cleaned = stripNoiseForLang(raw) || raw;
 
-  // 1. Deteksi Aksara CJK & Non-Latin (Tetap akurat walau bercampur istilah Inggris seperti "Injective", "Solana", "Mainnet"!)
+  // 1. Deteksi Aksara CJK & Non-Latin
   const kanaCount = countMatches(/[\u3040-\u30ff\uff66-\uff9f]/g, cleaned);
   const hangulCount = countMatches(/[\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]/g, cleaned);
   const hanziCount = countMatches(/[\u4e00-\u9fff\u3400-\u4dbf]/g, cleaned);
 
-  // Jepang: ada Hiragana/Katakana, ATAU Kanji murni yang ditandai lang="ja" oleh DOM X
   if (kanaCount >= 1 || (hanziCount >= 1 && normDom === "ja")) {
     return DOM_LANG_MAP.ja;
   }
-
-  // Korea: ada Hangul atau Jamo Korea (mis. ㅋㅋㅋ, ㅠㅠ)
   if (hangulCount >= 1) {
     return DOM_LANG_MAP.ko;
   }
-
-  // Mandarin / China (Simplified vs Traditional): tetap terdeteksi meski ada nama project Inggris panjang!
   if (hanziCount >= 1) {
     return detectChineseVariant(cleaned, normDom);
   }
 
-  // Cyrillic (Rusia / Ukraina)
   if (countMatches(/[\u0400-\u04ff]/g, cleaned) >= 2) {
     if (normDom === "uk" || /[іїєґІЇЄҐ]/.test(cleaned)) return DOM_LANG_MAP.uk;
     return DOM_LANG_MAP.ru;
   }
-
-  // Arab, Thailand, Hindi (Devanagari)
   if (countMatches(/[\u0600-\u06ff\u0750-\u077f]/g, cleaned) >= 2) return DOM_LANG_MAP.ar;
   if (countMatches(/[\u0e00-\u0e7f]/g, cleaned) >= 2) return DOM_LANG_MAP.th;
   if (countMatches(/[\u0900-\u097f]/g, cleaned) >= 2) return DOM_LANG_MAP.hi;
 
-  // Vietnam (diakritik khas Tiếng Việt)
   if (/[ăâđêôơưĂÂĐÊÔƠƯảẩẫậắằẳẵặẻểễệỉịỏổỗộớờởỡợủửữựỳỷỹỵ]/.test(cleaned)) {
     return DOM_LANG_MAP.vi;
   }
 
-  // 2. Deteksi Bahasa Beraksara Latin
+  // 2. Deteksi Bahasa Latin
   const lower = cleaned.toLowerCase();
   const idHits = countMatches(ID_STOP, lower);
   const idMorphHits = countMatches(ID_MORPH, lower);
   const idScore = idHits + idMorphHits;
   const enHits = countMatches(EN_STOP, lower);
 
-  // Prioritaskan deteksi slang/kata Indonesia (karena X kadang salah melabeli slang Indo sebagai ms/tl)
   if (idScore > 0 && idScore >= enHits) {
     return DOM_LANG_MAP.id;
   }
 
-  // Cek bahasa Eropa/Latin populer (Spanyol, Portugis, Prancis, Jerman, Turki)
   const latinLangScores = [
     { key: "es", hits: countMatches(ES_STOP, lower) },
     { key: "pt", hits: countMatches(PT_STOP, lower) },
@@ -179,9 +166,7 @@ function detectTweetLanguage(text, domLangHint = "") {
     return DOM_LANG_MAP[latinLangScores[0].key];
   }
 
-  // Jika DOM X secara eksplisit memberi tahu bahasa non-EN/non-ID (mis. es, pt, fr, de, tr, vi, it, nl, pl)
   if (normDom && normDom !== "en" && normDom !== "id" && normDom !== "in") {
-    // Pastikan bukan tweet bahasa Inggris penuh yang kebetulan salah tag
     if (enHits <= 2 || latinLangScores.some((x) => x.key === normDom && x.hits >= 1)) {
       return DOM_LANG_MAP[normDom];
     }
@@ -199,12 +184,20 @@ function detectTweetLanguage(text, domLangHint = "") {
     return DOM_LANG_MAP[normDom];
   }
 
-  return { label: "the exact same language as the target post", code: "same" };
+  return { label: "the exact same language as the target post", nativeName: "Same Language", code: "same" };
 }
 
-// Prioritaskan bahasa dari tweet utama yang sedang dibalas (agar quote-tweet China/Jepang/Korea/Indo atas berita Inggris tetap mengikuti bahasa pembuat post!)
 function resolveReplyLanguage(post) {
   const p = post || {};
+
+  // Jika user sempat klik "Translate post" di X, utamakan bahasa asli post sebelum diterjemahkan!
+  if (p.translatedFromLang) {
+    const origKey = normalizeDomLang(p.translatedFromLang);
+    if (origKey && DOM_LANG_MAP[origKey]) {
+      return DOM_LANG_MAP[origKey];
+    }
+  }
+
   const primaryText = [p.articleTitle, p.tweetText, p.pollOptions].filter(Boolean).join("\n");
   const cleanedPrimary = stripNoiseForLang(primaryText);
   const hasNonLatinScript =
@@ -236,7 +229,85 @@ function resolveReplyLanguage(post) {
   return detectTweetLanguage(fallbackText, p.tweetLang || p.quotedLang || "");
 }
 
-// Deteksi ticker ($BTC, $sol) dan mention (@solana) tanpa menangkap nominal uang ($100) atau email
+// Verifikasi apakah balasan model benar-benar menggunakan bahasa/aksara yang diminta!
+function isReplyInExpectedLanguage(replyText, lang) {
+  const raw = String(replyText || "")
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, "")
+    .trim();
+  if (!raw || !lang || lang.code === "same") return true;
+
+  if (lang.code === "zh-CN" || lang.code === "zh-TW") {
+    return /[\u4e00-\u9fff\u3400-\u4dbf]/.test(raw) && !/[\u3040-\u30ff]/.test(raw);
+  }
+  if (lang.code === "ja") {
+    return /[\u3040-\u30ff\uff66-\uff9f\u4e00-\u9fff]/.test(raw);
+  }
+  if (lang.code === "ko") {
+    return /[\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]/.test(raw);
+  }
+  if (lang.code === "ru" || lang.code === "uk") {
+    return /[\u0400-\u04ff]/.test(raw);
+  }
+  if (lang.code === "ar") {
+    return /[\u0600-\u06ff\u0750-\u077f]/.test(raw);
+  }
+  if (lang.code === "th") {
+    return /[\u0e00-\u0e7f]/.test(raw);
+  }
+  if (lang.code === "hi") {
+    return /[\u0900-\u097f]/.test(raw);
+  }
+
+  const lower = stripNoiseForLang(raw).toLowerCase();
+  const idScore = countMatches(ID_STOP, lower) + countMatches(ID_MORPH, lower);
+  const enHits = countMatches(EN_STOP, lower);
+
+  if (lang.code === "id") {
+    // Gagal jika output malah murni bahasa Inggris tanpa satu pun ciri Indonesia
+    if (enHits >= 2 && idScore === 0) return false;
+    // Gagal jika output malah CJK
+    if (/[\u3040-\u30ff\uac00-\ud7af\u4e00-\u9fff]/.test(raw)) return false;
+    return true;
+  }
+
+  if (lang.code === "en") {
+    if (idScore >= 2 && enHits === 0) return false;
+    if (/[\u3040-\u30ff\uac00-\ud7af\u4e00-\u9fff]/.test(raw)) return false;
+    return true;
+  }
+
+  // Untuk es, pt, fr, de, tr, vi, dll.: gagal jika output malah jelas bahasa Inggris penuh (>=3 enHits tanpa kata lokal)
+  if (enHits >= 3) {
+    if (lang.code === "vi" && !/[ăâđêôơưảẩẫậắằẳẵặẻểễệỉịỏổỗộớờởỡợủửữựỳỷỹỵ]/i.test(raw)) {
+      return false;
+    }
+    if (lang.code === "es" && countMatches(ES_STOP, lower) === 0) return false;
+    if (lang.code === "pt" && countMatches(PT_STOP, lower) === 0) return false;
+    if (lang.code === "fr" && countMatches(FR_STOP, lower) === 0) return false;
+    if (lang.code === "de" && countMatches(DE_STOP, lower) === 0) return false;
+    if (lang.code === "tr" && countMatches(TR_STOP, lower) === 0) return false;
+  }
+
+  return true;
+}
+
+// Bersihkan frasa "all lowercase" / "under X words" dari custom prompt user saat target bahasa adalah CJK/Non-Latin
+// supaya model tidak bingung dan malah membalas pakai bahasa Inggris lowercase!
+function sanitizeStylePromptForLang(systemPrompt, lang) {
+  const raw = String(systemPrompt || "").trim();
+  if (!raw) return "";
+  if (!lang || (!lang.nonLatin && !lang.cjk && !lang.korean)) return raw;
+
+  return raw
+    .replace(/\ball\s+lowercase\b[,]?\s*/gi, "")
+    .replace(/\blowercase\b[,]?\s*/gi, "")
+    .replace(/\bunder\s+\d+\s+words\b[,]?\s*/gi, "")
+    .replace(/\s{2,}/g, " ")
+    .replace(/^[,.\s]+|[,.\s]+$/g, "")
+    .trim();
+}
+
 function detectTickersAndProjects(text) {
   const cleaned = String(text || "").replace(/https?:\/\/\S+/gi, " ");
   const tickers = [];
@@ -259,7 +330,6 @@ function detectTickersAndProjects(text) {
   };
 }
 
-// Analisis maksud & struktur post (termasuk pola pertanyaan multibahasa: ?, ？, 吗, か, 나요/까요, dll.)
 function analyzePostIntent(post) {
   const p = post || {};
   const primary = [p.articleTitle, p.tweetText, p.pollOptions].filter(Boolean).join(" ");
@@ -357,8 +427,8 @@ function buildEntityAnchor(post, detected) {
     ];
     return [
       `ENTITY & TOPIC ANCHOR (${hints.join(" | ")}):`,
-      `- Naturally weave in the relevant ticker or project name (${examples.join(" / ")}${cleanAuthorName ? ` / ${cleanAuthorName}` : ""}) while writing in the required reply language.`,
-      "- Prefer plain project names or $tickers over raw '@handle' tags — real humans rarely tag '@handle' mid-sentence.",
+      `- Naturally weave in the relevant ticker or project name (${examples.join(" / ")}${cleanAuthorName ? ` / ${cleanAuthorName}` : ""}) while writing strictly in the target language.`,
+      "- Prefer plain project names or $tickers over raw '@handle' tags.",
     ].join("\n");
   }
 
@@ -381,7 +451,9 @@ function formatPostBlock(post) {
   if (p.name || p.handle) {
     lines.push("Author: " + [p.name, p.handle].filter(Boolean).join(" ").trim());
   }
-  if (p.tweetLang) {
+  if (p.translatedFromLang) {
+    lines.push("Original Untranslated Language of Post: " + p.translatedFromLang);
+  } else if (p.tweetLang) {
     lines.push("Detected Tweet Language Tag: " + p.tweetLang);
   }
   if (p.replyTo) {
@@ -413,128 +485,189 @@ function formatPostBlock(post) {
   return lines.join("\n");
 }
 
-// Aturan panjang, gaya ketikan native, dan larangan klise sesuai bahasa target!
+// Instruksi format + penutup akhir langsung dalam BAHASA ASLI TARGET (autoregressive priming 100% akurat!)
 function buildLanguageAndFormatDirectives(lang) {
   if (lang.code === "zh-CN") {
     return {
       formatBlock: [
-        "ANTI-AI NATIVE FORMAT (SIMPLIFIED CHINESE / 简体中文):",
-        "1. Output ONLY 1 short, punchy Chinese sentence (strictly 8–26 Chinese characters; keep English tickers/project names like $SOL or solana concise).",
-        "2. Write in authentic, grounded Chinese X/CT netizen phrasing (自然口语、接地气、像真人手机随手回复，严禁生硬翻译腔和客服腔).",
-        "3. NO ending period (不要句号 '。'), NO exclamation mark ('！'), NO quotation marks, NO emojis, NO hashtags.",
-        "4. Banned AI clichés: '值得关注', '拭目以待', '完全同意', '说得太对了', '意义重大', '未来可期'.",
-        "LANGUAGE LOCK: Reply 100% in Simplified Chinese (简体中文). Do NOT reply in English.",
+        "MANDATORY LANGUAGE & FORMAT (SIMPLIFIED CHINESE / 简体中文):",
+        "1. Reply 100% in Simplified Chinese (简体中文), 8–26 Chinese characters, 1 single short sentence.",
+        "2. Sound like a real Chinese X/CT user typing casually on mobile (自然口语、接地气、干脆利落，严禁翻译腔和AI客服腔).",
+        "3. NO ending period ('。'), NO exclamation mark ('！'), NO quotes, NO emojis, NO hashtags.",
+        "4. Banned clichés: '值得关注', '拭目以待', '完全同意', '说得太对了', '意义重大', '未来可期'.",
+        "5. FORBIDDEN: Do NOT output an English or Indonesian sentence.",
       ].join("\n"),
       userReminder:
-        "Write 1 short human reply to TARGET TWEET strictly in Simplified Chinese (简体中文, 8–26 chars, casual native X tone, no ending period '。', never reply in English).",
+        "请直接用【简体中文】写一句简短自然的推文回复（仅1句话，8-26个汉字左右，自然口语接地气，不要句号和感叹号，严禁使用英文整句回复，只输出回复内容本身）：",
     };
   }
 
   if (lang.code === "zh-TW") {
     return {
       formatBlock: [
-        "ANTI-AI NATIVE FORMAT (TRADITIONAL CHINESE / 繁體中文):",
-        "1. Output ONLY 1 short, punchy Traditional Chinese sentence (strictly 8–26 Chinese characters; keep English tickers/project names concise).",
-        "2. Write in authentic Taiwan/HK X community phrasing (自然口語、接地氣、像真人用手機隨手回覆，嚴禁機器翻譯腔與简体字).",
-        "3. NO ending period (不要句號 '。'), NO exclamation mark ('！'), NO quotation marks, NO emojis, NO hashtags.",
-        "4. Banned AI clichés: '值得關注', '拭目以待', '完全同意', '意義重大', '未來可期'.",
-        "LANGUAGE LOCK: Reply 100% in Traditional Chinese (繁體中文). Do NOT use Simplified Chinese or English-only sentences.",
+        "MANDATORY LANGUAGE & FORMAT (TRADITIONAL CHINESE / 繁體中文):",
+        "1. Reply 100% in Traditional Chinese (繁體中文), 8–26 Chinese characters, 1 single short sentence.",
+        "2. Sound like a real Taiwan/HK X user typing casually on mobile (自然口語、接地氣、不死板，嚴禁機器翻譯腔與簡體字).",
+        "3. NO ending period ('。'), NO exclamation mark ('！'), NO quotes, NO emojis, NO hashtags.",
+        "4. Banned clichés: '值得關注', '拭目以待', '完全同意', '意義重大', '未來可期'.",
+        "5. FORBIDDEN: Do NOT output an English or Simplified Chinese sentence.",
       ].join("\n"),
       userReminder:
-        "Write 1 short human reply to TARGET TWEET strictly in Traditional Chinese (繁體中文, 8–26 chars, casual native X tone, no ending period '。', never reply in English).",
+        "請直接用【繁體中文】寫一句簡短自然的推文回覆（僅1句話，8-26個漢字左右，自然口語，不要句號和驚嘆號，嚴禁使用英文整句回覆，只輸出回覆內容本身）：",
     };
   }
 
   if (lang.code === "ja") {
     return {
       formatBlock: [
-        "ANTI-AI NATIVE FORMAT (JAPANESE / 日本語):",
-        "1. Output ONLY 1 short, natural Japanese sentence (strictly 12–38 characters).",
-        "2. Write in authentic Japanese X/Twitter casual phrasing (自然なXの口語・タメ口またはこなれたつぶやき調。直訳調や不自然な敬語・AIっぽい定型文は厳禁).",
-        "3. NO ending period (句点 '。' なし), NO exclamation mark ('！' なし), NO quotation marks, NO emojis, NO hashtags.",
-        "4. Banned AI clichés: '注目ですね', '目が離せない', '完全に同意', '素晴らしい洞察', '今後の展開に期待'.",
-        "LANGUAGE LOCK: Reply 100% in natural Japanese (日本語). Do NOT reply in English or Chinese.",
+        "MANDATORY LANGUAGE & FORMAT (JAPANESE / 日本語):",
+        "1. Reply 100% in natural Japanese (日本語), 12–38 characters, 1 single short sentence.",
+        "2. Sound like an authentic Japanese X user (自然なXの口語・タメ口またはこなれたつぶやき調。直訳調やAIっぽい硬い敬語は厳禁).",
+        "3. NO ending period ('。' なし), NO exclamation mark ('！' なし), NO quotes, NO emojis, NO hashtags.",
+        "4. Banned clichés: '注目ですね', '目が離せない', '完全に同意', '素晴らしい洞察', '今後の展開に期待'.",
+        "5. FORBIDDEN: Do NOT reply in English or Chinese.",
       ].join("\n"),
       userReminder:
-        "Write 1 short human reply to TARGET TWEET strictly in natural Japanese (日本語, 12–38 chars, casual X tone, no ending '。', never reply in English).",
+        "必ず【自然な日本語】だけで短いリプライを1文（12〜38文字程度、Xの自然な口語、句点「。」や感嘆符なし、英語での返信は厳禁）書いてください。返信本文のみ出力：",
     };
   }
 
   if (lang.code === "ko") {
     return {
       formatBlock: [
-        "ANTI-AI NATIVE FORMAT (KOREAN / 한국어):",
-        "1. Output ONLY 1 short, natural Korean sentence (strictly under 10 어절 / ~35 characters).",
-        "2. Write in authentic Korean X/CT community casual tone (자연스러운 트위터/커뮤니티 구어체, 번역투나 딱딱한 로봇 말투 절대 금지).",
-        "3. NO ending period (마침표 없이), NO exclamation mark, NO quotation marks, NO emojis, NO hashtags.",
-        "4. Banned AI clichés: '주목할 만하네요', '기대됩니다', '전적으로 동의합니다', '좋은 인사이트', '지켜봐야겠네요'.",
-        "LANGUAGE LOCK: Reply 100% in natural Korean (한국어). Do NOT reply in English.",
+        "MANDATORY LANGUAGE & FORMAT (KOREAN / 한국어):",
+        "1. Reply 100% in natural Korean (한국어), under 10 어절 (~35 characters), 1 single short sentence.",
+        "2. Sound like an authentic Korean X/CT user (자연스러운 트위터/커뮤니티 구어체, 번역투나 딱딱한 로봇 말투 절대 금지).",
+        "3. NO ending period, NO exclamation mark, NO quotes, NO emojis, NO hashtags.",
+        "4. Banned clichés: '주목할 만하네요', '기대됩니다', '전적으로 동의합니다', '좋은 인사이트', '지켜봐야겠네요'.",
+        "5. FORBIDDEN: Do NOT reply in English.",
       ].join("\n"),
       userReminder:
-        "Write 1 short human reply to TARGET TWEET strictly in natural Korean (한국어, 1 short casual sentence under 35 chars, no ending period, never reply in English).",
+        "반드시 【자연스러운 한국어】로만 짧은 트위터 답글 한 문장(35자 이내, 자연스러운 커뮤니티 구어체, 마침표/느낌표 없이, 영어 답변 절대 금지)을 작성하세요. 답글 본문만 출력:",
+    };
+  }
+
+  if (lang.code === "id") {
+    return {
+      formatBlock: [
+        "MANDATORY LANGUAGE & FORMAT (BAHASA INDONESIA):",
+        "1. Reply 100% in natural casual Indonesian (bahasa santai/gaul natural seperti orang asli ngetik di HP, bukan terjemahan kaku).",
+        "2. Strictly 1 short sentence, under 14 words, all lowercase.",
+        "3. No ending period, no exclamation mark, no quotes, no emojis, no hashtags.",
+        "4. Banned clichés: 'setuju banget', 'menarik banget', 'patut ditunggu', 'luar biasa', 'mantap jiwa'.",
+        "5. FORBIDDEN: Do NOT reply in English.",
+      ].join("\n"),
+      userReminder:
+        "Balas TARGET TWEET di atas 100% dalam 【Bahasa Indonesia】 santai & natural (1 kalimat pendek di bawah 14 kata, huruf kecil semua, tanpa titik di akhir, dilarang keras membalas pakai bahasa Inggris). Tulis isi balasannya saja:",
+    };
+  }
+
+  if (lang.code === "en") {
+    return {
+      formatBlock: [
+        "MANDATORY LANGUAGE & FORMAT (ENGLISH):",
+        "1. Reply 100% in natural English, 1 single short sentence, strictly under 14 words.",
+        "2. All lowercase. No ending period, no exclamation mark, no quotation marks, no emojis, no hashtags.",
+        "3. Banned AI clichés: 'totally agree', 'spot on', 'interesting take', 'time will tell', 'great insight', 'game changer', 'massive', 'bullish on', 'underrated', 'quietly building', 'isn't just X it's Y', 'let that sink in', 'worth watching'.",
+        "4. Sound like a sharp real person typing effortlessly from their phone. Zero Indonesian or non-English words.",
+      ].join("\n"),
+      userReminder:
+        "Reply to TARGET TWEET 100% in natural 【English】 (1 short sentence under 14 words, all lowercase, no ending period, grounded in the exact topic above, zero non-English words). Output only the reply text:",
     };
   }
 
   if (lang.nonLatin) {
     return {
       formatBlock: [
-        `ANTI-AI NATIVE FORMAT (${lang.label.toUpperCase()}):`,
-        "1. Output ONLY 1 short, punchy sentence (under 14 words).",
-        `2. Write in authentic, casual native ${lang.label} internet/X phrasing — never stiff machine-translated phrasing.`,
+        `MANDATORY LANGUAGE & FORMAT (${lang.label.toUpperCase()} / ${lang.nativeName}):`,
+        `1. Reply 100% in ${lang.label} (${lang.nativeName}), 1 single short casual sentence (under 14 words).`,
+        `2. Use authentic native ${lang.label} X/internet phrasing — never stiff machine-translated phrasing.`,
         "3. No ending period, no exclamation mark, no quotation marks, no emojis, no hashtags.",
-        `LANGUAGE LOCK: Reply 100% in ${lang.label}. Do NOT reply in English.`,
+        "4. FORBIDDEN: Do NOT reply in English.",
       ].join("\n"),
-      userReminder: `Write 1 short human reply to TARGET TWEET strictly in ${lang.label} (1 short casual sentence under 14 words, no ending period, never reply in English).`,
+      userReminder: `Write 1 short human reply to TARGET TWEET strictly in ${lang.label} (${lang.nativeName}) — 1 short casual sentence, no ending period, NEVER reply in English. Output only the reply:`,
     };
   }
 
-  const langLockLine =
-    lang.code === "en"
-      ? "LANGUAGE LOCK: The target post is in ENGLISH. Reply 100% in natural English. Zero Indonesian words."
-      : lang.code === "id"
-        ? "LANGUAGE LOCK: The target post is in INDONESIAN. Reply 100% in natural casual Indonesian (bahasa santai manusiawi, bukan terjemahan kaku)."
-        : `LANGUAGE LOCK: Reply strictly in ${lang.label} (100% native casual phrasing, never switch to English).`;
-
-  const targetName =
-    lang.code === "en"
-      ? "natural English"
-      : lang.code === "id"
-        ? "natural casual Indonesian"
-        : lang.label;
-
   return {
     formatBlock: [
-      "ANTI-AI COMPACT FORMAT:",
-      "1. Output ONLY the reply itself — ONE single short sentence, strictly under 14 words.",
-      "2. All lowercase. No ending period, no exclamation mark, no quotation marks, no emojis, no hashtags.",
-      "3. Banned AI clichés: 'totally agree', 'spot on', 'interesting take', 'time will tell', 'great insight', 'game changer', 'massive', 'bullish on', 'underrated', 'quietly building', 'isn't just X it's Y', 'let that sink in', 'worth watching'.",
-      "4. Sound like a sharp real person typing effortlessly from their phone.",
-      langLockLine,
+      `MANDATORY LANGUAGE & FORMAT (${lang.label.toUpperCase()}):`,
+      `1. Reply strictly in ${lang.label}, 1 single short casual sentence, under 14 words, all lowercase.`,
+      "2. No ending period, no exclamation mark, no quotation marks, no emojis, no hashtags.",
+      "3. Sound like a real native speaker typing casually on mobile. Do NOT switch to English unless the target post itself is English.",
     ].join("\n"),
-    userReminder: `Write 1 short human reply to TARGET TWEET strictly in ${targetName} (1 sentence under 14 words, all lowercase, no ending period, grounded in the exact topic above, never repeat the sentence).`,
+    userReminder: `Write 1 short human reply to TARGET TWEET strictly in ${lang.label} (1 short sentence under 14 words, all lowercase, no ending period, never switch to English). Output only the reply:`,
   };
 }
 
-function contextLock(lang, post, detected) {
+function contextLock(lang, post, detected, customStylePrompt) {
   const intentBlock = analyzePostIntent(post);
   const entityBlock = buildEntityAnchor(post, detected);
   const { formatBlock, userReminder } = buildLanguageAndFormatDirectives(lang);
+  const cleanCustomStyle = sanitizeStylePromptForLang(customStylePrompt, lang);
+
+  const sections = [
+    "STRICT GROUNDING (ZERO HALLUCINATION):",
+    "- Base your reaction EXCLUSIVELY on facts, claims, numbers, and relationships present in TWEET CONTEXT.",
+    "- NEVER invent outside news, fake dates, unmentioned partnerships, or random price targets.",
+    "- Do NOT parrot or rephrase the tweet's exact words back at the author — add a sharp, grounded human angle on it.",
+    "",
+    intentBlock,
+    "",
+    entityBlock,
+  ];
+
+  if (cleanCustomStyle) {
+    sections.push(
+      "",
+      `USER VIBE PREFERENCE (tone/attitude ONLY — NEVER override the mandatory reply language ${lang.label}):`,
+      cleanCustomStyle
+    );
+  }
+
+  sections.push("", formatBlock);
 
   return {
-    systemLock: [
-      "STRICT GROUNDING (ZERO HALLUCINATION):",
-      "- Base your reaction EXCLUSIVELY on facts, claims, numbers, and relationships present in TWEET CONTEXT.",
-      "- NEVER invent outside news, fake dates, unmentioned partnerships, or random price targets.",
-      "- Do NOT parrot or rephrase the tweet's exact words back at the author — add a sharp, grounded human angle on it.",
-      "",
-      intentBlock,
-      "",
-      entityBlock,
-      "",
-      formatBlock,
-    ].join("\n"),
+    systemLock: sections.join("\n"),
     userReminder,
   };
+}
+
+function buildRewriteMessages(wrongReply, lang, post) {
+  const targetDesc = `${lang.label}${lang.nativeName ? ` (${lang.nativeName})` : ""}`;
+  const lengthRule = lang.cjk
+    ? "1 short casual sentence (10–30 characters), no ending period ('。'), no emojis, no quotes"
+    : lang.korean
+      ? "1 short casual Korean X sentence (under 35 characters), no ending period, no emojis, no quotes"
+      : lang.nonLatin
+        ? "1 short casual sentence (under 14 words), no ending period, no emojis, no quotes"
+        : "1 short casual sentence (under 14 words), all lowercase, no ending period, no emojis, no quotes";
+
+  return [
+    {
+      role: "system",
+      content: `You rewrite X/Twitter replies into authentic, native, casual ${targetDesc}. Output ONLY the rewritten reply in ${targetDesc} with zero explanation.`,
+    },
+    {
+      role: "user",
+      content:
+        `Target post context: ${String(post?.tweetText || post?.quotedText || "").slice(0, 260)}\n` +
+        `Draft reply (wrong language): ${wrongReply}\n\n` +
+        `Rewrite that draft reply into 100% natural native ${targetDesc} (${lengthRule}). Keep any $tickers or project names intact. Output ONLY the final ${targetDesc} reply:`,
+    },
+  ];
+}
+
+function extractReplyContentFromData(data) {
+  const msg = data?.choices?.[0]?.message;
+  let text = msg?.content;
+  if (!text && typeof data?.choices?.[0]?.text === "string") {
+    text = data.choices[0].text;
+  }
+  return String(text || "")
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, "")
+    .trim();
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -737,57 +870,82 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
-  const entityScanText = [
-    post?.articleTitle,
-    post?.tweetText,
-    post?.pollOptions,
-    post?.quotedText,
-    post?.cardSummary,
-  ]
-    .filter(Boolean)
-    .join("\n");
+  (async () => {
+    const entityScanText = [
+      post?.articleTitle,
+      post?.tweetText,
+      post?.pollOptions,
+      post?.quotedText,
+      post?.cardSummary,
+    ]
+      .filter(Boolean)
+      .join("\n");
 
-  const lang = resolveReplyLanguage(post);
-  const detected = detectTickersAndProjects(entityScanText);
-  const { systemLock, userReminder } = contextLock(lang, post, detected);
+    const lang = resolveReplyLanguage(post);
+    const detected = detectTickersAndProjects(entityScanText);
+    const { systemLock, userReminder } = contextLock(lang, post, detected, systemPrompt);
 
-  const messages = [
-    {
-      role: "system",
-      content:
-        "You are a sharp, native-speaking human replying under a post on X. You ALWAYS match the exact language and script of the target post and write grounded, context-locked one-liners.\n" +
-        systemLock,
-    },
-  ];
+    // SATU pesan system tunggal (mencegah proxy VPS menimpa messages[0] dengan messages[1]!)
+    const messages = [
+      {
+        role: "system",
+        content:
+          "You are a sharp, native-speaking human replying under a post on X. You ALWAYS reply in the exact mandatory target language and write grounded, context-locked one-liners.\n\n" +
+          systemLock,
+      },
+      {
+        role: "user",
+        content: formatPostBlock(post) + "\n\n" + userReminder,
+      },
+    ];
 
-  if (systemPrompt && systemPrompt.trim()) {
-    messages.push({
-      role: "system",
-      content:
-        "Additional user vibe/personality preference (apply ONLY the tone/attitude — NEVER let this English description override the required reply LANGUAGE above):\n" +
-        systemPrompt.trim(),
+    const firstRes = await runCompletion({
+      endpoint,
+      parsedEndpoint,
+      originPattern,
+      apiKey: cleanKey,
+      timeoutMs,
+      body: {
+        model: model,
+        messages: messages,
+        max_tokens: 1024,
+        temperature: 0.7,
+        stream: false,
+      },
     });
-  }
 
-  messages.push({
-    role: "user",
-    content: formatPostBlock(post) + "\n\n" + userReminder,
-  });
+    if (!firstRes || !firstRes.ok) {
+      return { ...firstRes, detectedLang: lang.code };
+    }
 
-  runCompletion({
-    endpoint,
-    parsedEndpoint,
-    originPattern,
-    apiKey: cleanKey,
-    timeoutMs,
-    body: {
-      model: model,
-      messages: messages,
-      max_tokens: 1024,
-      temperature: 0.7,
-      stream: false,
-    },
-  })
+    const firstCandidate = extractReplyContentFromData(firstRes.data);
+
+    // Guard Otomatis: Jika model masih membalas dengan bahasa yang salah (mis. tetap bahasa Inggris di post Jepang/China/Korea/Indo),
+    // langsung konversi otomatis ke bahasa target sebelum dikirim ke X!
+    if (firstCandidate && !isReplyInExpectedLanguage(firstCandidate, lang)) {
+      const rewriteRes = await runCompletion({
+        endpoint,
+        parsedEndpoint,
+        originPattern,
+        apiKey: cleanKey,
+        timeoutMs,
+        body: {
+          model: model,
+          messages: buildRewriteMessages(firstCandidate, lang, post),
+          max_tokens: 512,
+          temperature: 0.4,
+          stream: false,
+        },
+      });
+
+      const rewrittenText = rewriteRes?.ok ? extractReplyContentFromData(rewriteRes.data) : "";
+      if (rewrittenText && isReplyInExpectedLanguage(rewrittenText, lang)) {
+        return { ...rewriteRes, detectedLang: lang.code, rewrittenLang: true };
+      }
+    }
+
+    return { ...firstRes, detectedLang: lang.code };
+  })()
     .then(sendResponse)
     .catch((err) =>
       sendResponse({ ok: false, code: "internal", error: err?.message || String(err) })
