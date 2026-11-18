@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <title>X AI Reply</title>
+  <style>
+    :root {
+      --bg: #ffffff;
+      --bg-glow: radial-gradient(280px 140px at 85% -20px, rgba(29, 155, 240, 0.14), rgba(124, 58, 237, 0.06) 60%, transparent 100%);
+      --surface: #f7f9fb;
+      --surface-hover: #eef3f7;
+      --fg: #0f1419;
+      --muted: #536471;
+      --line: #e5ecf0;
+      --line-strong: #cfd9de;
+      --blue: #1d9bf0;
+      --green: #059669;
+      --green-bg: rgba(16, 185, 129, 0.11);
+      --green-border: rgba(16, 185, 129, 0.28);
+      --amber: #d97706;
+      --amber-bg: rgba(245, 158, 11, 0.12);
+      --amber-border: rgba(245, 158, 11, 0.32);
+      --red: #e11d48;
+      --red-bg: rgba(225, 29, 72, 0.1);
+      --red-border: rgba(225, 29, 72, 0.28);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f1419;
+        --bg-glow: radial-gradient(300px 150px at 85% -20px, rgba(29, 155, 240, 0.22), rgba(124, 58, 237, 0.12) 60%, transparent 100%);
+        --surface: #161d26;
+        --surface-hover: #1e2734;
+        --fg: #e7e9ea;
+        --muted: #8b98a5;
+        --line: #253040;
+        --line-strong: #324156;
+        --green: #34d399;
+        --green-bg: rgba(16, 185, 129, 0.14);
+        --green-border: rgba(52, 211, 153, 0.3);
+        --amber: #fbbf24;
+        --amber-bg: rgba(245, 158, 11, 0.14);
+        --amber-border: rgba(251, 191, 36, 0.32);
+        --red: #fb7185;
+        --red-bg: rgba(244, 63, 94, 0.14);
+        --red-border: rgba(251, 113, 133, 0.3);
+      }
+    }
+
+    * { box-sizing: border-box; }
+
+    @keyframes popIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    body {
+      width: 332px;
+      margin: 0;
+      padding: 16px;
+      background-color: var(--bg);
+      background-image: var(--bg-glow);
+      background-repeat: no-repeat;
+      color: var(--fg);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, system-ui, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 13px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .logo {
+      width: 32px;
+      height: 32px;
+      border-radius: 9px;
+      box-shadow: 0 3px 10px rgba(29, 155, 240, 0.28);
+    }
+
+    .title-wrap h2 {
+      font-size: 15px;
+      font-weight: 750;
+      letter-spacing: -0.01em;
+      margin: 0;
+    }
+
+    .title-wrap span {
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5.5px;
+      padding: 4px 9px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 650;
+      border: 1px solid var(--line);
+      background: var(--surface);
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .badge .dot {
+      width: 6.5px;
+      height: 6.5px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+    .badge[data-tone="ok"] {
+      color: var(--green);
+      background: var(--green-bg);
+      border-color: var(--green-border);
+    }
+    .badge[data-tone="warn"] {
+      color: var(--amber);
+      background: var(--amber-bg);
+      border-color: var(--amber-border);
+    }
+    .badge[data-tone="error"] {
+      color: var(--red);
+      background: var(--red-bg);
+      border-color: var(--red-border);
+    }
+
+    /* ── Info Summary Card ─────────────────────────────────── */
+    .info-card {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 11px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+      margin-bottom: 12px;
+      animation: popIn 0.2s ease both;
+    }
+
+    .info-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 12px;
+    }
+    .info-label {
+      color: var(--muted);
+    }
+    .info-val {
+      font-weight: 650;
+      color: var(--fg);
+      max-width: 195px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .info-val.mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 11.5px;
+    }
+    .info-val[data-tone="ok"] { color: var(--green); }
+    .info-val[data-tone="warn"] { color: var(--amber); }
+
+    /* ── Host Permission Inline Banner ─────────────────────── */
+    .perm-banner {
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 9px 11px;
+      border-radius: 12px;
+      margin-bottom: 12px;
+      background: var(--amber-bg);
+      border: 1px solid var(--amber-border);
+      color: var(--amber);
+      font-size: 11.5px;
+      line-height: 1.35;
+      animation: popIn 0.18s ease both;
+    }
+    .perm-banner[data-visible="true"] {
+      display: flex;
+    }
+    .perm-btn {
+      appearance: none;
+      border: 1px solid var(--amber-border);
+      background: var(--bg);
+      color: var(--amber);
+      font-family: inherit;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 5px 9px;
+      border-radius: 8px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: transform 0.14s ease, filter 0.14s ease;
+    }
+    .perm-btn:hover {
+      transform: translateY(-1px);
+      filter: brightness(1.06);
+    }
+
+    /* ── Quick Tone Selector ───────────────────────────────── */
+    .tone-block {
+      margin-bottom: 13px;
+    }
+    .tone-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 7px;
+      font-size: 11.5px;
+      font-weight: 650;
+      color: var(--muted);
+    }
+    .tone-saved {
+      font-size: 11px;
+      color: var(--green);
+      opacity: 0;
+      transition: opacity 0.18s ease;
+    }
+    .tone-saved[data-show="true"] {
+      opacity: 1;
+    }
+
+    .tone-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+    }
+
+    .tone-pill {
+      appearance: none;
+      border: 1px solid var(--line);
+      background: var(--surface);
+      color: var(--muted);
+      font-family: inherit;
+      font-size: 11.5px;
+      font-weight: 600;
+      padding: 6.5px 9px;
+      border-radius: 10px;
+      cursor: pointer;
+      text-align: center;
+      transition: all 0.15s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+    .tone-pill:hover {
+      background: var(--surface-hover);
+      color: var(--fg);
+      border-color: var(--line-strong);
+    }
+    .tone-pill[data-active="true"] {
+      background: rgba(29, 155, 240, 0.14);
+      border-color: var(--blue);
+      color: var(--blue);
+    }
+
+    /* ── Actions & Feedback ────────────────────────────────── */
+    .actions {
+      display: flex;
+      gap: 8px;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      height: 37px;
+      padding: 0 12px;
+      border-radius: 11px;
+      border: 1px solid transparent;
+      font-family: inherit;
+      font-size: 12.5px;
+      font-weight: 650;
+      cursor: pointer;
+      transition: transform 0.15s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.16s ease, filter 0.16s ease, background 0.16s ease;
+    }
+    .btn:hover:not(:disabled) { transform: translateY(-1px); }
+    .btn:active:not(:disabled) { transform: translateY(0) scale(0.98); }
+    .btn:disabled { opacity: 0.6; cursor: default; }
+
+    .btn svg {
+      width: 14px;
+      height: 14px;
+      flex-shrink: 0;
+    }
+
+    .btn-secondary {
+      background: var(--surface);
+      border-color: var(--line-strong);
+      color: var(--fg);
+      min-width: 96px;
+    }
+    .btn-secondary:hover:not(:disabled) {
+      background: var(--surface-hover);
+    }
+
+    .btn-primary {
+      flex: 1;
+      background: linear-gradient(135deg, #1d9bf0 0%, #4f46e5 100%);
+      color: #ffffff;
+      box-shadow: 0 3px 12px rgba(29, 155, 240, 0.28);
+    }
+    .btn-primary:hover:not(:disabled) {
+      filter: brightness(1.05);
+      box-shadow: 0 5px 16px rgba(79, 70, 229, 0.36);
+    }
+
+    .feedback {
+      display: none;
+      margin-top: 10px;
+      padding: 8px 10px;
+      border-radius: 10px;
+      font-size: 11.5px;
+      line-height: 1.45;
+      word-break: break-word;
+      animation: popIn 0.16s ease both;
+    }
+    .feedback[data-visible="true"] { display: block; }
+    .feedback[data-tone="ok"] {
+      color: var(--green);
+      background: var(--green-bg);
+      border: 1px solid var(--green-border);
+    }
+    .feedback[data-tone="error"] {
+      color: var(--red);
+      background: var(--red-bg);
+      border: 1px solid var(--red-border);
+    }
+    .feedback[data-tone="warn"] {
+      color: var(--amber);
+      background: var(--amber-bg);
+      border: 1px solid var(--amber-border);
+    }
+  </style>
+</head>
+<body>
+  <div class="top">
+    <div class="brand">
+      <img src="icons/icon128.png" alt="Logo" class="logo">
+      <div class="title-wrap">
+        <h2>X AI Reply</h2>
+        <span>v4.0 · Anti-Halu Engine</span>
+      </div>
+    </div>
+    <div id="statusBadge" class="badge" data-tone="warn">
+      <span class="dot"></span>
+      <span id="statusText">Memuat…</span>
+    </div>
+  </div>
+
+  <div class="info-card">
+    <div class="info-row">
+      <span class="info-label">Provider</span>
+      <span id="hostValue" class="info-val mono">api.x.ai</span>
+    </div>
+    <div class="info-row">
+      <span class="info-label">Model</span>
+      <span id="modelValue" class="info-val mono">grok-4.6-high</span>
+    </div>
+    <div class="info-row">
+      <span class="info-label">API Key</span>
+      <span id="keyValue" class="info-val">Memeriksa…</span>
+    </div>
+  </div>
+
+  <div id="permBanner" class="perm-banner">
+    <span id="permBannerText">Domain API belum diizinkan.</span>
+    <button type="button" id="quickGrant" class="perm-btn">Izinkan Host</button>
+  </div>
+
+  <div class="tone-block">
+    <div class="tone-header">
+      <span>Gaya Balasan Cepat</span>
+      <span id="toneSavedHint" class="tone-saved">✓ Tersimpan</span>
+    </div>
+    <div class="tone-grid">
+      <button type="button" class="tone-pill popup-tone" data-tone="all lowercase, under 10 words, dry and effortless, sound like a real person typing from phone, no emojis">Santai &amp; Dry</button>
+      <button type="button" class="tone-pill popup-tone" data-tone="clever, witty one-liner, sharp observation, casual lowercase, zero clichés, under 12 words">Witty &amp; Tajam</button>
+      <button type="button" class="tone-pill popup-tone" data-tone="crypto-native CT vibe, grounded take on the thesis or chart, concise lowercase, under 12 words, no hype emojis">Crypto / CT</button>
+      <button type="button" class="tone-pill popup-tone" data-tone="curious and thoughtful, ask a short smart follow-up or add one concrete angle, casual lowercase, under 13 words">Diskusi Kritis</button>
+    </div>
+  </div>
+
+  <div class="actions">
+    <button type="button" id="quickTest" class="btn btn-secondary">Tes API</button>
+    <button type="button" id="open-options" class="btn btn-primary">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.75">
+        <circle cx="8" cy="8" r="2.2"/>
+        <path d="M13.2 9.8A1.1 1.1 0 0 0 13.4 11L13.5 11.1A1.3 1.3 0 1 1 11.7 12.9L11.6 12.8A1.1 1.1 0 0 0 9.7 13.6V13.8A1.3 1.3 0 0 1 7.1 13.8V13.7A1.1 1.1 0 0 0 5.2 12.9L5.1 13A1.3 1.3 0 1 1 3.3 11.2L3.4 11.1A1.1 1.1 0 0 0 2.6 9.2H2.4A1.3 1.3 0 0 1 2.4 6.6H2.5A1.1 1.1 0 0 0 3.3 4.7L3.2 4.6A1.3 1.3 0 1 1 5 2.8L5.1 2.9A1.1 1.1 0 0 0 7 2.1V2A1.3 1.3 0 0 1 9.6 2V2.1A1.1 1.1 0 0 0 11.5 2.9L11.6 2.8A1.3 1.3 0 1 1 13.4 4.6L13.3 4.7A1.1 1.1 0 0 0 14.1 6.6H14.3A1.3 1.3 0 0 1 14.3 9.2H14.2" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <span>Buka Settings</span>
+    </button>
+  </div>
+
+  <div id="quickFeedback" class="feedback"></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+# Secrets & Environment
+.env
+.env.*
+*.key
+*.pem
+*.secret
+secrets.*
+config.local.*
+
+# Dependencies & Build Artifacts
+node_modules/
+dist/
+*.crx
+*.zip
+*.log
+
+# OS & Editor Files
+.DS_Store
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/

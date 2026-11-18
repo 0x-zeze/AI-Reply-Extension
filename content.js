@@ -1,0 +1,1439 @@
+// X AI Reply - Content Script
+// Menyuntik tombol floating "AI Reply" yang ringan (GPU-composited, zero layout-thrash),
+// ekstraksi konteks multi-layer (Thread, Quote, Card, Poll, Article, Media),
+// serta insert Draft.js bebas double-text via synthetic ClipboardEvent("paste").
+
+const DEFAULT_BASE_URL = "https://api.x.ai/v1";
+const DEFAULT_MODEL = "grok-4.6-high";
+const DEFAULT_PROMPT =
+  "all lowercase, under 10 words, dry and effortless, sound like a real person typing from phone, no emojis";
+
+const settingsCache = {
+  baseUrl: DEFAULT_BASE_URL,
+  apiKey: "",
+  model: DEFAULT_MODEL,
+  prompt: DEFAULT_PROMPT,
+  timeout: 60,
+};
+let settingsLoaded = false;
+
+// Rate limiting — minimal 3 detik antar request sukses
+let lastRequestTime = 0;
+const MIN_REQUEST_INTERVAL_MS = 3000;
+
+// ═══════════════════════════════════════════════════════════════
+// Tracking & Zero-Lag MutationObserver
+// ═══════════════════════════════════════════════════════════════
+let isInsertingText = false;
+let observerDebounceTimer = null;
+let observerRafId = null;
+let reconnectObserverTimer = null;
+
+const boxButtonMap = new WeakMap();
+const mountedButtons = new Set();
+
+function hasRelevantDomMutation(mutations) {
+  for (let i = 0; i < mutations.length; i++) {
+    const m = mutations[i];
+    if (m.addedNodes.length === 0 && m.removedNodes.length === 0) continue;
+
+    const target = m.target;
+    if (target && target.nodeType === Node.ELEMENT_NODE) {
+      if (target.closest?.(".x-ai-reply-button, .x-ai-toast-host")) continue;
+
+      const activeEditor = target.closest?.(
+        'div[contenteditable="true"][data-testid^="tweetTextarea"]'
+      );
+      if (activeEditor) {
+        const existingBtn = boxButtonMap.get(activeEditor);
+        if (existingBtn && existingBtn.isConnected) continue;
+      }
+    }
+    return true;
+  }
+  return false;
+}
+
+function scheduleReplyBoxScan() {
+  if (isInsertingText || observerDebounceTimer) return;
+  observerDebounceTimer = setTimeout(() => {
+    observerDebounceTimer = null;
+    if (isInsertingText) return;
+    if (typeof requestAnimationFrame === "function") {
+      if (observerRafId) cancelAnimationFrame(observerRafId);
+      observerRafId = requestAnimationFrame(() => {
+        observerRafId = null;
+        if (!isInsertingText) insertButtonIntoReplyBoxes();
+      });
+    } else {
+      insertButtonIntoReplyBoxes();
+    }
+  }, 110);
+}
+
+const observer = new MutationObserver((mutations) => {
+  if (isInsertingText) return;
+  if (!hasRelevantDomMutation(mutations)) return;
+  scheduleReplyBoxScan();
+});
+
+// ═══════════════════════════════════════════════════════════════
+// GPU-Composited Styles (transform & opacity only)
+// ═══════════════════════════════════════════════════════════════
+const SPARKLE_SVG = `<svg class="x-ai-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M7.2 1.8C7.45 1.1 8.45 1.1 8.7 1.8L9.65 4.55C9.88 5.2 10.4 5.72 11.05 5.95L13.8 6.9C14.5 7.15 14.5 8.15 13.8 8.4L11.05 9.35C10.4 9.58 9.88 10.1 9.65 10.75L8.7 13.5C8.45 14.2 7.45 14.2 7.2 13.5L6.25 10.75C6.02 10.1 5.5 9.58 4.85 9.35L2.1 8.4C1.4 8.15 1.4 7.15 2.1 6.9L4.85 5.95C5.5 5.72 6.02 5.2 6.25 4.55L7.2 1.8Z" fill="currentColor"/><circle cx="13" cy="2.8" r="1.15" fill="currentColor" opacity="0.85"/></svg>`;
+const SPINNER_SVG = `<svg class="x-ai-icon x-ai-spin" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="5.75" stroke="currentColor" stroke-opacity="0.28" stroke-width="2"/><path d="M13.75 8A5.75 5.75 0 0 0 8 2.25" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`;
+const CHECK_SVG = `<svg class="x-ai-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3.5 8.3L6.6 11.4L12.6 4.8" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+
+let stylesInjected = false;
+
+function injectStyles() {
+  if (stylesInjected && document.getElementById("x-ai-reply-styles")) return;
+  if (document.getElementById("x-ai-reply-styles")) {
+    stylesInjected = true;
+    return;
+  }
+  const style = document.createElement("style");
+  style.id = "x-ai-reply-styles";
+  style.textContent = `
+    @keyframes xAiSpin {
+      to { transform: rotate(360deg); }
+    }
+    @keyframes xAiBtnEnter {
+      from { opacity: 0; transform: translate3d(0, 3px, 0) scale(0.94); }
+      to { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+    }
+    @keyframes xAiSheen {
+      0% { transform: translate3d(-130%, 0, 0); }
+      100% { transform: translate3d(130%, 0, 0); }
+    }
+    @keyframes xAiToastIn {
+      from { opacity: 0; transform: translate3d(0, 10px, 0) scale(0.97); }
+      to { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+    }
+
+    .x-ai-reply-button {
+      position: absolute;
+      top: 4px;
+      right: 8px;
+      z-index: 10;
+      overflow: hidden;
+      contain: layout paint;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      min-width: 82px;
+      height: 27px;
+      padding: 0 11px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.22);
+      background: linear-gradient(135deg, #1d9bf0 0%, #4f46e5 55%, #7c3aed 100%);
+      color: #ffffff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+      font-size: 11.5px;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+      line-height: 1;
+      white-space: nowrap;
+      user-select: none;
+      cursor: pointer;
+      backface-visibility: hidden;
+      transform: translate3d(0, 0, 0);
+      box-shadow: 0 2px 8px rgba(29, 155, 240, 0.26), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+      animation: xAiBtnEnter 0.18s cubic-bezier(0.22, 1, 0.36, 1) both;
+      transition:
+        transform 0.16s cubic-bezier(0.22, 1, 0.36, 1),
+        opacity 0.16s ease,
+        box-shadow 0.18s ease;
+    }
+
+    .x-ai-reply-button::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(
+        105deg,
+        transparent 20%,
+        rgba(255, 255, 255, 0.26) 50%,
+        transparent 80%
+      );
+      transform: translate3d(-130%, 0, 0);
+      pointer-events: none;
+    }
+
+    .x-ai-reply-button:hover {
+      transform: translate3d(0, -1.5px, 0) scale(1.025);
+      box-shadow: 0 6px 16px rgba(79, 70, 229, 0.38), 0 2px 6px rgba(29, 155, 240, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.34);
+    }
+
+    .x-ai-reply-button:active {
+      transform: translate3d(0, 0, 0) scale(0.96);
+    }
+
+    .x-ai-reply-button:focus-visible {
+      outline: 2px solid #38bdf8;
+      outline-offset: 2px;
+    }
+
+    .x-ai-reply-button[data-loading="true"] {
+      pointer-events: none;
+      opacity: 0.94;
+    }
+
+    .x-ai-reply-button[data-loading="true"]::after {
+      animation: xAiSheen 1.35s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+    }
+
+    .x-ai-reply-button[data-state="done"] {
+      background: linear-gradient(135deg, #059669 0%, #10b981 100%);
+      box-shadow: 0 4px 12px rgba(16, 185, 129, 0.34);
+    }
+
+    .x-ai-reply-button .x-ai-icon {
+      width: 12.5px;
+      height: 12.5px;
+      flex-shrink: 0;
+    }
+
+    .x-ai-reply-button .x-ai-spin {
+      animation: xAiSpin 0.72s linear infinite;
+    }
+
+    .x-ai-toast-host {
+      position: fixed;
+      right: 20px;
+      bottom: 20px;
+      z-index: 2147483647;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-width: min(380px, calc(100vw - 32px));
+      pointer-events: none;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+    }
+
+    .x-ai-toast {
+      pointer-events: auto;
+      contain: layout paint;
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 11px 14px;
+      border-radius: 14px;
+      background: rgba(15, 20, 25, 0.97);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.42);
+      color: #f7f9f9;
+      font-size: 12.5px;
+      line-height: 1.45;
+      backface-visibility: hidden;
+      animation: xAiToastIn 0.2s cubic-bezier(0.22, 1, 0.36, 1) both;
+      transition: opacity 0.16s ease, transform 0.16s ease;
+    }
+
+    .x-ai-toast[data-leaving="true"] {
+      opacity: 0;
+      transform: translate3d(0, 8px, 0) scale(0.97);
+    }
+
+    .x-ai-toast-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      margin-top: 5px;
+      flex-shrink: 0;
+      background: #38bdf8;
+      box-shadow: 0 0 8px currentColor;
+    }
+    .x-ai-toast[data-type="error"] .x-ai-toast-dot { background: #f43f5e; color: #f43f5e; }
+    .x-ai-toast[data-type="warn"] .x-ai-toast-dot { background: #f59e0b; color: #f59e0b; }
+    .x-ai-toast[data-type="success"] .x-ai-toast-dot { background: #10b981; color: #10b981; }
+
+    .x-ai-toast-body {
+      flex: 1;
+      min-width: 0;
+      word-break: break-word;
+    }
+
+    .x-ai-toast-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 7px;
+    }
+
+    .x-ai-toast-btn {
+      appearance: none;
+      border: 1px solid rgba(29, 155, 240, 0.45);
+      background: rgba(29, 155, 240, 0.18);
+      color: #7dd3fc;
+      font-family: inherit;
+      font-size: 11.5px;
+      font-weight: 600;
+      padding: 4px 10px;
+      border-radius: 999px;
+      cursor: pointer;
+      transition: background 0.15s ease, border-color 0.15s ease;
+    }
+    .x-ai-toast-btn:hover {
+      background: rgba(29, 155, 240, 0.3);
+      border-color: rgba(56, 189, 248, 0.75);
+    }
+
+    .x-ai-toast-close {
+      appearance: none;
+      border: none;
+      background: transparent;
+      color: #8b98a5;
+      font-size: 15px;
+      line-height: 1;
+      padding: 2px 4px;
+      cursor: pointer;
+      border-radius: 6px;
+    }
+    .x-ai-toast-close:hover {
+      color: #ffffff;
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .x-ai-reply-button, .x-ai-reply-button::after, .x-ai-toast {
+        transition: none !important;
+        animation: none !important;
+      }
+    }
+  `;
+  (document.head || document.documentElement).appendChild(style);
+  stylesInjected = true;
+}
+
+function showToast(message, options = {}) {
+  injectStyles();
+  const { type = "info", duration = 4500, actionLabel = "", onAction = null } = options;
+
+  let host = document.querySelector(".x-ai-toast-host");
+  if (!host) {
+    host = document.createElement("div");
+    host.className = "x-ai-toast-host";
+    document.body.appendChild(host);
+  }
+
+  while (host.children.length >= 2) {
+    host.firstElementChild.remove();
+  }
+
+  const toast = document.createElement("div");
+  toast.className = "x-ai-toast";
+  toast.dataset.type = type;
+
+  const dot = document.createElement("span");
+  dot.className = "x-ai-toast-dot";
+
+  const body = document.createElement("div");
+  body.className = "x-ai-toast-body";
+  const textNode = document.createElement("div");
+  textNode.textContent = message;
+  body.appendChild(textNode);
+
+  const dismiss = () => {
+    if (toast.dataset.leaving === "true") return;
+    toast.dataset.leaving = "true";
+    setTimeout(() => toast.remove(), 170);
+  };
+
+  if (actionLabel && typeof onAction === "function") {
+    const actions = document.createElement("div");
+    actions.className = "x-ai-toast-actions";
+    const actBtn = document.createElement("button");
+    actBtn.type = "button";
+    actBtn.className = "x-ai-toast-btn";
+    actBtn.textContent = actionLabel;
+    actBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      onAction();
+      dismiss();
+    });
+    actions.appendChild(actBtn);
+    body.appendChild(actions);
+  }
+
+  const closeBtn = document.createElement("button");
+  closeBtn.type = "button";
+  closeBtn.className = "x-ai-toast-close";
+  closeBtn.setAttribute("aria-label", "Tutup");
+  closeBtn.textContent = "×";
+  closeBtn.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dismiss();
+  });
+
+  toast.appendChild(dot);
+  toast.appendChild(body);
+  toast.appendChild(closeBtn);
+  host.appendChild(toast);
+
+  if (duration > 0) {
+    setTimeout(dismiss, duration);
+  }
+}
+
+function openExtensionSettings() {
+  try {
+    chrome.runtime.sendMessage({ action: "openOptions" }, () => {
+      void chrome.runtime.lastError;
+    });
+  } catch (e) {
+    showToast("Extension baru di-update. Refresh halaman X (F5) terlebih dahulu.", {
+      type: "warn",
+    });
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Settings Sync
+// ═══════════════════════════════════════════════════════════════
+function applyStorageData(data) {
+  if (!data) return;
+  if (data.baseUrl !== undefined) {
+    settingsCache.baseUrl = (data.baseUrl || DEFAULT_BASE_URL).replace(/\/+$/, "");
+  }
+  if (data.apiKey !== undefined) {
+    settingsCache.apiKey = data.apiKey || "";
+  }
+  if (data.model !== undefined) {
+    settingsCache.model = data.model || DEFAULT_MODEL;
+  }
+  if (data.prompt !== undefined) {
+    settingsCache.prompt = data.prompt;
+  }
+  if (data.timeout !== undefined) {
+    const t = Number(data.timeout);
+    settingsCache.timeout = Number.isFinite(t) && t > 0 ? t : 60;
+  }
+}
+
+function loadSettings() {
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.sync.get(
+        ["baseUrl", "apiKey", "model", "prompt", "timeout"],
+        (data) => {
+          if (chrome.runtime.lastError) {
+            console.warn("[Yap Extension] Storage read error:", chrome.runtime.lastError.message);
+            resolve(settingsCache);
+            return;
+          }
+          applyStorageData({
+            baseUrl: data.baseUrl || DEFAULT_BASE_URL,
+            apiKey: data.apiKey || "",
+            model: data.model || DEFAULT_MODEL,
+            prompt: data.prompt !== undefined ? data.prompt : DEFAULT_PROMPT,
+            timeout: data.timeout,
+          });
+          settingsLoaded = true;
+          resolve(settingsCache);
+        }
+      );
+    } catch (e) {
+      resolve(settingsCache);
+    }
+  });
+}
+
+try {
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "sync") return;
+    const patch = {};
+    for (const key of Object.keys(changes)) {
+      patch[key] = changes[key].newValue;
+    }
+    applyStorageData(patch);
+  });
+} catch (e) {}
+
+function buildEndpoint(baseUrl) {
+  let url = (baseUrl || DEFAULT_BASE_URL).trim().replace(/\/+$/, "");
+  if (!/\/chat\/completions(\?.*)?$/i.test(url)) {
+    url += "/chat/completions";
+  }
+  return url;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Deep Post Context Extraction (Thread, Quote, Card, Poll, Article, Media)
+// ═══════════════════════════════════════════════════════════════
+function cleanText(value) {
+  return String(value || "")
+    .replace(/\r?\n+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function truncateAtWord(text, maxLen) {
+  const s = cleanText(text);
+  if (s.length <= maxLen) return s;
+  const cut = s.slice(0, maxLen);
+  const sp = cut.lastIndexOf(" ");
+  return (sp > Math.floor(maxLen * 0.55) ? cut.slice(0, sp) : cut) + "...";
+}
+
+const BLOCK_TAGS = new Set(["DIV", "P", "LI", "SECTION", "ARTICLE", "HEADER", "FOOTER"]);
+
+function walkNodeText(el) {
+  if (!el) return "";
+  let out = "";
+  for (const node of el.childNodes) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      out += node.textContent;
+    } else if (node.nodeType === Node.ELEMENT_NODE) {
+      const tag = node.tagName;
+      if (tag === "IMG" && node.alt) {
+        out += node.alt;
+      } else if (tag === "BR") {
+        out += " ";
+      } else if (BLOCK_TAGS.has(tag)) {
+        out += " " + walkNodeText(node) + " ";
+      } else {
+        out += walkNodeText(node);
+      }
+    }
+  }
+  return out;
+}
+
+function extractNodeTextWithEmojis(el) {
+  if (!el) return "";
+  return cleanText(walkNodeText(el));
+}
+
+function parseUserBlock(root, excludeScope) {
+  if (!root) return { name: "", handle: "" };
+  const userNodes = [...root.querySelectorAll('[data-testid="User-Name"]')];
+  const userEl =
+    userNodes.find((el) => !excludeScope || !excludeScope.contains(el)) || userNodes[0];
+  if (!userEl) return { name: "", handle: "" };
+
+  const raw = cleanText(userEl.innerText);
+  const handleMatch = raw.match(/@([A-Za-z0-9_]{1,15})/);
+  const handle = handleMatch ? "@" + handleMatch[1] : "";
+  const name = raw
+    .replace(/@([A-Za-z0-9_]+).*$/, "")
+    .replace(/[·•].*$/, "")
+    .trim();
+  return { name, handle };
+}
+
+// Isolasi container Quote Tweet asli tanpa tertukar dengan Link Preview Card
+function findQuoteContainer(article) {
+  if (!article) return null;
+  const explicit = article.querySelector('[data-testid="quoteTweet"]');
+  if (explicit) return explicit;
+
+  const roleLinks = article.querySelectorAll('div[role="link"]');
+  for (const link of roleLinks) {
+    if (link === article) continue;
+    if (link.closest('[data-testid^="card"]')) continue;
+    const hasUser = Boolean(link.querySelector('[data-testid="User-Name"]'));
+    const hasBody = Boolean(
+      link.querySelector('[data-testid="tweetText"], [data-testid="tweetPhoto"], [data-testid="videoPlayer"]')
+    );
+    if (hasUser && hasBody) return link;
+  }
+  return null;
+}
+
+function extractPollOptions(root, excludeScope) {
+  const poll = root.querySelector('[data-testid="cardPoll"]');
+  if (!poll || (excludeScope && excludeScope.contains(poll))) return "";
+
+  const optionEls = poll.querySelectorAll('[role="radio"], [data-testid^="choice"], li');
+  const opts = [];
+  for (const el of optionEls) {
+    const t = cleanText(extractNodeTextWithEmojis(el));
+    if (t && !opts.includes(t)) opts.push(t);
+  }
+  if (opts.length > 0) return opts.slice(0, 5).join(" | ");
+  return truncateAtWord(extractNodeTextWithEmojis(poll), 200);
+}
+
+function extractArticleLongform(root, excludeScope) {
+  const titleEl = root.querySelector('[data-testid="twitter-article-title"]');
+  const bodyEl = root.querySelector(
+    '[data-testid="twitterArticleRichTextView"], [data-testid="twitterArticleReadView"], [data-testid="longformRichTextComponent"]'
+  );
+  const title =
+    titleEl && (!excludeScope || !excludeScope.contains(titleEl))
+      ? truncateAtWord(extractNodeTextWithEmojis(titleEl), 160)
+      : "";
+  const body =
+    bodyEl && (!excludeScope || !excludeScope.contains(bodyEl))
+      ? truncateAtWord(extractNodeTextWithEmojis(bodyEl), 420)
+      : "";
+  return { title, body };
+}
+
+function extractCardSummary(root, excludeScope) {
+  const cards = root.querySelectorAll(
+    '[data-testid="card.layoutLarge.detail"], [data-testid="card.layoutSmall.detail"], [data-testid="card.wrapper"], [data-testid^="card"]'
+  );
+  for (const card of cards) {
+    if (card.getAttribute("data-testid") === "cardPoll") continue;
+    if (excludeScope && excludeScope.contains(card)) continue;
+    const cardText = extractNodeTextWithEmojis(card);
+    if (cardText && cardText.length > 8) {
+      return truncateAtWord(cardText, 340);
+    }
+  }
+  return "";
+}
+
+// Hindari salah membaca alt avatar profil user (src=".../profile_images/...") sebagai gambar grafik!
+function extractImageAlt(root, excludeScope) {
+  const imgs = root.querySelectorAll('img[alt]:not([alt=""])');
+  const alts = [];
+  for (const img of imgs) {
+    if (excludeScope && excludeScope.contains(img)) continue;
+    if (img.closest('[data-testid^="Tweet-User-Avatar"], [data-testid="UserAvatar-Container"]')) {
+      continue;
+    }
+    const src = String(img.getAttribute("src") || "").toLowerCase();
+    if (src.includes("profile_images") || src.includes("twemoji") || src.includes("/emoji/")) {
+      continue;
+    }
+
+    const alt = cleanText(img.getAttribute("alt"));
+    const low = alt.toLowerCase();
+    if (
+      alt &&
+      !low.includes("avatar") &&
+      !low.includes("profile picture") &&
+      low !== "image" &&
+      low !== "gambar" &&
+      low !== "embedded video" &&
+      alt.length > 5 &&
+      !alts.includes(alt)
+    ) {
+      alts.push(truncateAtWord(alt, 220));
+    }
+  }
+  return alts.slice(0, 2).join(" | ");
+}
+
+function detectMediaType(root, excludeScope, pollOptions, articleTitle) {
+  if (pollOptions) return "Poll";
+  if (articleTitle) return "X Longform Article";
+  const video = root.querySelector('[data-testid="videoPlayer"], video');
+  if (video && (!excludeScope || !excludeScope.contains(video))) return "Video Post";
+  const photo = root.querySelector('[data-testid="tweetPhoto"]');
+  if (photo && (!excludeScope || !excludeScope.contains(photo))) return "Image/Chart Post";
+  return "";
+}
+
+function extractReplyTo(root) {
+  if (!root) return "";
+  const walker = root.querySelectorAll("span, div");
+  for (const el of walker) {
+    if (el.children.length > 6) continue;
+    const t = cleanText(el.innerText);
+    if (/^(Replying to|Membalas)\b/i.test(t) && t.length < 140) {
+      return t;
+    }
+  }
+  return "";
+}
+
+// Ambil kode bahasa asli dari atribut lang="..." milik X (<div data-testid="tweetText" lang="ja/ko/zh/...">)
+function extractDomLang(primaryNode, root, excludeScope) {
+  const pickValid = (val) => {
+    const code = String(val || "").trim().toLowerCase();
+    if (!code || /^(und|zxx|qme|qht|qct|qam|art)$/.test(code)) return "";
+    return code;
+  };
+
+  if (primaryNode && typeof primaryNode.getAttribute === "function") {
+    const direct = pickValid(primaryNode.getAttribute("lang"));
+    if (direct) return direct;
+  }
+
+  if (root && typeof root.querySelectorAll === "function") {
+    const candidates = root.querySelectorAll(
+      '[data-testid="tweetText"][lang], [data-testid="twitterArticleRichTextView"][lang], [data-testid="longformRichTextComponent"][lang]'
+    );
+    for (const el of candidates) {
+      if (excludeScope && excludeScope.contains(el)) continue;
+      const found = pickValid(el.getAttribute("lang"));
+      if (found) return found;
+    }
+  }
+  return "";
+}
+
+function extractDataFromArticle(article) {
+  if (!article) return null;
+
+  const quoteRoot = findQuoteContainer(article);
+  const textNodes = [...article.querySelectorAll('[data-testid="tweetText"]')];
+  const mainTextNode =
+    textNodes.find((n) => !quoteRoot || !quoteRoot.contains(n)) || null;
+
+  let tweetText = extractNodeTextWithEmojis(mainTextNode);
+  const longform = extractArticleLongform(article, quoteRoot);
+  if (!tweetText && longform.body) {
+    tweetText = longform.body;
+  } else if (tweetText && longform.body && longform.body.length > tweetText.length + 30) {
+    tweetText = longform.body;
+  }
+
+  const tweetLang = extractDomLang(mainTextNode, article, quoteRoot);
+  const { name, handle } = parseUserBlock(article, quoteRoot);
+  const pollOptions = extractPollOptions(article, quoteRoot);
+  const cardSummary = extractCardSummary(article, quoteRoot);
+  const imageAlt = extractImageAlt(article, quoteRoot);
+  const mediaType = detectMediaType(article, quoteRoot, pollOptions, longform.title);
+
+  let quotedText = "";
+  let quotedLang = "";
+  if (quoteRoot) {
+    const qTextNode = quoteRoot.querySelector('[data-testid="tweetText"]');
+    quotedLang = extractDomLang(qTextNode, quoteRoot, null);
+    const qBody =
+      extractNodeTextWithEmojis(qTextNode) ||
+      extractCardSummary(quoteRoot, null) ||
+      extractImageAlt(quoteRoot, null);
+    if (qBody && qBody !== tweetText && qBody.length > 2) {
+      const qUser = parseUserBlock(quoteRoot, null);
+      const qPrefix =
+        qUser.name || qUser.handle
+          ? `${[qUser.name, qUser.handle ? `(${qUser.handle})` : ""].filter(Boolean).join(" ")}: `
+          : "";
+      quotedText = truncateAtWord(qPrefix + qBody, 340);
+    }
+  }
+
+  const replyTo = extractReplyTo(article);
+
+  if (
+    !tweetText &&
+    !longform.title &&
+    !pollOptions &&
+    !quotedText &&
+    !cardSummary &&
+    !imageAlt
+  ) {
+    return null;
+  }
+
+  return {
+    name,
+    handle,
+    tweetText: truncateAtWord(tweetText, 650),
+    tweetLang,
+    articleTitle: longform.title,
+    pollOptions,
+    quotedText,
+    quotedLang,
+    cardSummary,
+    imageAlt,
+    mediaType,
+    replyTo,
+    parentContext: "",
+  };
+}
+
+function buildParentThreadSummary(articlesBeforeTarget) {
+  if (!articlesBeforeTarget || articlesBeforeTarget.length === 0) return "";
+  const recent = articlesBeforeTarget.slice(-2);
+  const summaries = [];
+
+  for (const art of recent) {
+    const data = extractDataFromArticle(art);
+    if (!data) continue;
+    const body = data.tweetText || data.articleTitle || data.cardSummary || data.quotedText;
+    if (!body) continue;
+    const who = data.handle || data.name || "Author";
+    summaries.push(`${who}: ${truncateAtWord(body, 220)}`);
+  }
+  return summaries.join("\n");
+}
+
+function extractComposerReplyTo(replyBox) {
+  const scope =
+    replyBox.closest('[role="dialog"]') ||
+    replyBox.closest('[data-testid="cellInnerDiv"]') ||
+    replyBox.parentElement?.parentElement?.parentElement;
+  return extractReplyTo(scope);
+}
+
+function extractContextFromDialogNonArticle(dialog, replyBox) {
+  const composerWrap = getMountContainer(replyBox);
+  const attachment =
+    dialog.querySelector('[data-testid="attachments"]') ||
+    dialog.querySelector('[data-testid="quoteTweet"]');
+
+  const scope = attachment || dialog;
+  const candidates = [...scope.querySelectorAll('[data-testid="tweetText"]')].filter(
+    (el) => !composerWrap || !composerWrap.contains(el)
+  );
+  const targetTextEl = candidates[0] || null;
+  const tweetText = extractNodeTextWithEmojis(targetTextEl);
+  const tweetLang = extractDomLang(targetTextEl, scope, composerWrap);
+  const { name, handle } = parseUserBlock(scope, composerWrap);
+  const pollOptions = extractPollOptions(scope, composerWrap);
+  const cardSummary = extractCardSummary(scope, composerWrap);
+  const imageAlt = extractImageAlt(scope, composerWrap);
+
+  if (!tweetText && !pollOptions && !cardSummary && !imageAlt) return null;
+  return {
+    name,
+    handle,
+    tweetText: truncateAtWord(tweetText, 650),
+    tweetLang,
+    articleTitle: "",
+    pollOptions,
+    quotedText: "",
+    quotedLang: "",
+    cardSummary,
+    imageAlt,
+    mediaType: detectMediaType(scope, composerWrap, pollOptions, ""),
+    replyTo: extractReplyTo(dialog),
+    parentContext: "",
+  };
+}
+
+function getPostContext(replyBox) {
+  const emptyContext = {
+    name: "",
+    handle: "",
+    tweetText: "",
+    tweetLang: "",
+    articleTitle: "",
+    pollOptions: "",
+    quotedText: "",
+    quotedLang: "",
+    cardSummary: "",
+    imageAlt: "",
+    mediaType: "",
+    replyTo: "",
+    parentContext: "",
+  };
+
+  const composerReplyTo = extractComposerReplyTo(replyBox);
+
+  // 1. Jika di dalam Modal Dialog (Reply / Quote Tweet / Thread Reply)
+  const dialog = replyBox.closest('[role="dialog"]');
+  if (dialog) {
+    const articles = [
+      ...dialog.querySelectorAll('article[data-testid="tweet"], article'),
+    ];
+    if (articles.length > 0) {
+      const boxRect = replyBox.getBoundingClientRect();
+      let chosenIdx = articles.length - 1;
+      let bestDist = Infinity;
+
+      for (let i = 0; i < articles.length; i++) {
+        const rect = articles[i].getBoundingClientRect();
+        const dist = boxRect.top - rect.bottom;
+        if (dist >= -40 && dist < bestDist) {
+          bestDist = dist;
+          chosenIdx = i;
+        }
+      }
+
+      const extracted = extractDataFromArticle(articles[chosenIdx]);
+      if (extracted) {
+        if (!extracted.replyTo && composerReplyTo) extracted.replyTo = composerReplyTo;
+        if (chosenIdx > 0) {
+          extracted.parentContext = buildParentThreadSummary(articles.slice(0, chosenIdx));
+        }
+        return extracted;
+      }
+    }
+
+    const dialogFallback = extractContextFromDialogNonArticle(dialog, replyBox);
+    return dialogFallback || emptyContext;
+  }
+
+  // 2. Jika reply box berada langsung di dalam <article>
+  const ownArticle = replyBox.closest("article");
+  if (ownArticle) {
+    const extracted = extractDataFromArticle(ownArticle);
+    if (extracted) {
+      if (!extracted.replyTo && composerReplyTo) extracted.replyTo = composerReplyTo;
+      return extracted;
+    }
+  }
+
+  // 3. Halaman detail thread (/status/...) — ambil tweet tepat di atas kotak balasan + konteks thread sebelumnya
+  const boxRect = replyBox.getBoundingClientRect();
+  const allTweets = [...document.querySelectorAll('article[data-testid="tweet"]')];
+
+  let bestIdx = -1;
+  let minDistance = Infinity;
+
+  for (let i = 0; i < allTweets.length; i++) {
+    const rect = allTweets[i].getBoundingClientRect();
+    const dist = boxRect.top - rect.bottom;
+    if (dist >= -40 && dist < minDistance) {
+      minDistance = dist;
+      bestIdx = i;
+    }
+  }
+
+  if (bestIdx >= 0) {
+    const extracted = extractDataFromArticle(allTweets[bestIdx]);
+    if (extracted) {
+      if (!extracted.replyTo && composerReplyTo) extracted.replyTo = composerReplyTo;
+      if (bestIdx > 0) {
+        extracted.parentContext = buildParentThreadSummary(allTweets.slice(0, bestIdx));
+      }
+      return extracted;
+    }
+  }
+
+  // 4. Fallback ke focal tweet di halaman detail status
+  if (/\/status\/\d+/.test(location.pathname)) {
+    const mainFocalTweet =
+      document.querySelector('article[tabindex="-1"]') ||
+      document.querySelector('article[data-testid="tweet"]');
+    if (mainFocalTweet) {
+      const extracted = extractDataFromArticle(mainFocalTweet);
+      if (extracted) {
+        if (!extracted.replyTo && composerReplyTo) extracted.replyTo = composerReplyTo;
+        const focalIdx = allTweets.indexOf(mainFocalTweet);
+        if (focalIdx > 0) {
+          extracted.parentContext = buildParentThreadSummary(allTweets.slice(0, focalIdx));
+        }
+        return extracted;
+      }
+    }
+  }
+
+  return emptyContext;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Mount Container & Zero-Reflow Smart Injection
+// ═══════════════════════════════════════════════════════════════
+function getMountContainer(box) {
+  if (!box) return null;
+  const draftRoot = box.closest(".DraftEditor-root");
+  if (draftRoot && draftRoot.parentElement) {
+    return draftRoot.parentElement;
+  }
+  return box.parentElement;
+}
+
+function shouldInjectForBox(box, container) {
+  const dialog = box.closest('[role="dialog"]');
+  if (dialog) {
+    if (
+      dialog.querySelector(
+        'article, [data-testid="tweet"], [data-testid="attachments"], [data-testid="quoteTweet"]'
+      )
+    ) {
+      return true;
+    }
+    const textOutsideComposer = [...dialog.querySelectorAll('[data-testid="tweetText"]')].some(
+      (el) => !container.contains(el)
+    );
+    return textOutsideComposer;
+  }
+
+  if (/\/status\/\d+/.test(location.pathname)) return true;
+  if (box.closest("article")) return true;
+
+  const cell = box.closest('[data-testid="cellInnerDiv"]');
+  if (cell && cell.querySelector('article[data-testid="tweet"]')) return true;
+
+  return false;
+}
+
+function setButtonVisualState(btn, state) {
+  if (!btn) return;
+  if (state === "loading") {
+    btn.dataset.loading = "true";
+    delete btn.dataset.state;
+    btn.innerHTML = `${SPINNER_SVG}<span>Thinking…</span>`;
+  } else if (state === "done") {
+    delete btn.dataset.loading;
+    btn.dataset.state = "done";
+    btn.innerHTML = `${CHECK_SVG}<span>Done</span>`;
+  } else {
+    delete btn.dataset.loading;
+    delete btn.dataset.state;
+    btn.innerHTML = `${SPARKLE_SVG}<span>AI Reply</span>`;
+  }
+}
+
+function cleanupOrphanButtons() {
+  for (const btn of mountedButtons) {
+    const container = btn.parentElement;
+    if (!container || !container.isConnected) {
+      btn.remove();
+      mountedButtons.delete(btn);
+      continue;
+    }
+    const replyBox = container.querySelector(
+      'div[contenteditable="true"][data-testid^="tweetTextarea"]'
+    );
+    if (!replyBox) {
+      btn.remove();
+      mountedButtons.delete(btn);
+    }
+  }
+}
+
+function insertButtonIntoReplyBoxes() {
+  cleanupOrphanButtons();
+
+  const replyBoxes = document.querySelectorAll(
+    'div[contenteditable="true"][data-testid^="tweetTextarea"]'
+  );
+  if (replyBoxes.length === 0) return;
+
+  injectStyles();
+
+  // Fase 1: Batch DOM reads
+  const pendingMounts = [];
+  for (let i = 0; i < replyBoxes.length; i++) {
+    const box = replyBoxes[i];
+    const existing = boxButtonMap.get(box);
+    if (existing && existing.isConnected) continue;
+
+    const container = getMountContainer(box);
+    if (!container) continue;
+    const alreadyInDom = container.querySelector(".x-ai-reply-button");
+    if (alreadyInDom) {
+      boxButtonMap.set(box, alreadyInDom);
+      mountedButtons.add(alreadyInDom);
+      continue;
+    }
+    if (!shouldInjectForBox(box, container)) continue;
+
+    const needsRelative = getComputedStyle(container).position === "static";
+    pendingMounts.push({ box, container, needsRelative });
+  }
+
+  // Fase 2: Batch DOM writes
+  for (let i = 0; i < pendingMounts.length; i++) {
+    const { box, container, needsRelative } = pendingMounts[i];
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "x-ai-reply-button";
+    btn.title = "Generate balasan singkat sesuai konteks tweet";
+    btn.setAttribute("data-translate", "no");
+    setButtonVisualState(btn, "idle");
+
+    btn.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+    });
+
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (btn.dataset.loading === "true") return;
+      setButtonVisualState(btn, "loading");
+      generateText(box, btn, container);
+    });
+
+    if (needsRelative) {
+      container.style.position = "relative";
+    }
+    if (!box.dataset.xAiPadded) {
+      box.style.paddingRight = "94px";
+      box.dataset.xAiPadded = "true";
+    }
+
+    container.appendChild(btn);
+    boxButtonMap.set(box, btn);
+    mountedButtons.add(btn);
+  }
+}
+
+// Deteksi & potong jika output API pernah mengulang kalimat dua kali (termasuk aksara CJK pendek)
+function dedupeRepeatedText(text) {
+  const s = String(text || "").trim();
+  if (s.length < 8) return s;
+
+  if (s.length % 2 === 0) {
+    const half = s.length / 2;
+    const first = s.slice(0, half);
+    const second = s.slice(half);
+    if (first.toLowerCase() === second.toLowerCase()) {
+      return first.trim();
+    }
+  }
+
+  const repeatedMatch = s.match(/^(.{4,}?)(?:[\s.!?,;—。！？、-]+)\1$/i);
+  if (repeatedMatch) {
+    return repeatedMatch[1].trim();
+  }
+
+  return s;
+}
+
+function cleanModelReply(rawText) {
+  let cleaned = String(rawText || "");
+  cleaned = cleaned.replace(/<think>[\s\S]*?<\/think>/gi, "");
+  cleaned = cleaned.replace(/<thinking>[\s\S]*?<\/thinking>/gi, "");
+
+  if (/<think\b|<thinking\b/i.test(cleaned)) {
+    return "";
+  }
+
+  cleaned = cleaned
+    .replace(/\r?\n+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^["'“”‘’「」『』`]+|["'“”‘’「」『』`]+$/g, "")
+    .replace(/[.。!！]+$/g, "")
+    .trim();
+
+  return dedupeRepeatedText(cleaned);
+}
+
+async function generateText(box, btn, mountContainer) {
+  let succeeded = false;
+
+  try {
+    const now = Date.now();
+    if (now - lastRequestTime < MIN_REQUEST_INTERVAL_MS) {
+      const waitSec = Math.ceil((MIN_REQUEST_INTERVAL_MS - (now - lastRequestTime)) / 1000);
+      showToast(`Tunggu ${waitSec} detik sebelum generate lagi.`, {
+        type: "warn",
+        duration: 2600,
+      });
+      return;
+    }
+
+    if (!settingsLoaded) {
+      await loadSettings();
+    }
+
+    if (!settingsCache.apiKey.trim()) {
+      showToast("API key belum diisi di pengaturan extension.", {
+        type: "warn",
+        duration: 6000,
+        actionLabel: "Buka Settings",
+        onAction: openExtensionSettings,
+      });
+      return;
+    }
+
+    const post = getPostContext(box);
+    const hasContent =
+      post.tweetText ||
+      post.articleTitle ||
+      post.pollOptions ||
+      post.quotedText ||
+      post.cardSummary ||
+      post.imageAlt;
+
+    if (!hasContent) {
+      showToast("Konteks tweet tidak terdeteksi. Pastikan tweet terlihat di layar.", {
+        type: "warn",
+      });
+      return;
+    }
+
+    const timeoutMs = Math.round(settingsCache.timeout * 1000);
+
+    const result = await sendMessageSafe(
+      {
+        action: "generateReply",
+        endpoint: buildEndpoint(settingsCache.baseUrl),
+        apiKey: settingsCache.apiKey.trim(),
+        model: settingsCache.model,
+        systemPrompt: settingsCache.prompt,
+        timeoutMs,
+        post,
+      },
+      timeoutMs + 20000
+    );
+
+    if (!result || result.error) {
+      const errObj = new Error(result?.error || "Gagal menghubungi API");
+      errObj.code = result?.code || "";
+      throw errObj;
+    }
+
+    if (!result.ok) {
+      const rawErr = result.data?.error;
+      let msg = "Error upstream";
+      if (typeof rawErr === "string" && rawErr.trim()) msg = rawErr;
+      else if (rawErr?.message) msg = rawErr.message;
+      else if (typeof rawErr?.error === "string") msg = rawErr.error;
+      else if (rawErr) msg = JSON.stringify(rawErr).slice(0, 180);
+      throw new Error(`HTTP ${result.status} — ${msg}`);
+    }
+
+    lastRequestTime = Date.now();
+
+    const messageObj = result.data?.choices?.[0]?.message;
+    let rawReply = messageObj?.content;
+
+    if (!rawReply && typeof result.data?.choices?.[0]?.text === "string") {
+      rawReply = result.data.choices[0].text;
+    }
+
+    const replyText = cleanModelReply(rawReply);
+
+    if (!replyText) {
+      if (
+        messageObj?.reasoning_content ||
+        /<think\b|<thinking\b/i.test(String(rawReply || ""))
+      ) {
+        throw new Error(
+          "Model reasoning kehabisan token sebelum menulis jawaban akhir. Coba klik lagi atau gunakan model yang lebih cepat."
+        );
+      }
+      throw new Error("Model mengembalikan respon kosong.");
+    }
+
+    const inserted = await insertTextProperly(box, replyText, mountContainer);
+    if (!inserted) {
+      showToast("Kotak balasan sudah tertutup sebelum balasan selesai.", {
+        type: "warn",
+      });
+      return;
+    }
+
+    succeeded = true;
+    setButtonVisualState(btn, "done");
+    setTimeout(() => {
+      if (btn && btn.isConnected && btn.dataset.loading !== "true") {
+        setButtonVisualState(btn, "idle");
+      }
+    }, 1200);
+  } catch (err) {
+    console.error("[Yap Extension] Error:", err);
+    const msg = err?.message || String(err);
+    const needsPerm =
+      err?.code === "no_permission" || /no_permission|izin akses|izin host/i.test(msg);
+
+    if (needsPerm) {
+      showToast(
+        "Izin host untuk Base URL belum diberikan. Buka Settings lalu klik \"Beri Izin Host\".",
+        {
+          type: "error",
+          duration: 7500,
+          actionLabel: "Buka Settings",
+          onAction: openExtensionSettings,
+        }
+      );
+    } else {
+      showToast(msg, { type: "error", duration: 5500 });
+    }
+  } finally {
+    if (!succeeded) {
+      setButtonVisualState(btn, "idle");
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// insertTextProperly — Anti Double-Text untuk Draft.js X
+//
+// Kenapa sebelumnya muncul teks double (separuh putih + separuh biru):
+//   Saat kotak reply inline belum ter-focus, memanggil execCommand("insertText")
+//   secara sinkron membuat:
+//     (1) Browser menyisipkan raw text node putih ke DOM, DAN
+//     (2) Draft.js juga menyisipkan teks yang sama ke EditorState (dengan @mention biru).
+//
+// Solusi permanen:
+//   1. Focus editor lalu tunggu 1 frame agar React/Draft.js selesai expand & sync SelectionState.
+//   2. Jika ada teks lama, selectAll -> tunggu 1 frame -> delete -> tunggu 1 frame.
+//   3. Gunakan synthetic ClipboardEvent("paste") sebagai metode UTAMA:
+//      Browser TIDAK PERNAH menyisipkan native DOM text untuk synthetic paste,
+//      sedangkan Draft.js editOnPaste memanggil preventDefault() dan merender tepat 1x!
+// ═══════════════════════════════════════════════════════════════
+function waitFrames(ms = 24) {
+  return new Promise((resolve) => {
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(() => setTimeout(resolve, ms));
+    } else {
+      setTimeout(resolve, ms);
+    }
+  });
+}
+
+async function insertTextProperly(el, text, fallbackScope) {
+  const resolveLiveBox = () => {
+    if (el && document.contains(el)) return el;
+    if (fallbackScope && document.contains(fallbackScope)) {
+      return fallbackScope.querySelector(
+        'div[contenteditable="true"][data-testid^="tweetTextarea"]'
+      );
+    }
+    return null;
+  };
+
+  el = resolveLiveBox();
+  if (!el) return false;
+
+  isInsertingText = true;
+  if (observerDebounceTimer) {
+    clearTimeout(observerDebounceTimer);
+    observerDebounceTimer = null;
+  }
+  if (observerRafId && typeof cancelAnimationFrame === "function") {
+    cancelAnimationFrame(observerRafId);
+    observerRafId = null;
+  }
+  if (reconnectObserverTimer) {
+    clearTimeout(reconnectObserverTimer);
+    reconnectObserverTimer = null;
+  }
+  observer.disconnect();
+
+  try {
+    // 1. Focus dan beri 1 frame agar inline composer X selesai expand & inisialisasi SelectionState
+    if (document.activeElement !== el) {
+      el.focus();
+      await waitFrames(35);
+      el = resolveLiveBox();
+      if (!el) return false;
+      if (document.activeElement !== el) {
+        el.focus();
+        await waitFrames(16);
+      }
+      if (document.activeElement !== el) {
+        console.error("[Yap Extension] Tidak bisa focus pada reply box.");
+        return false;
+      }
+    }
+
+    // 2. Bersihkan teks sebelumnya (jika user klik ulang untuk regenerate)
+    if (cleanText(el.innerText).length > 0) {
+      try {
+        document.execCommand("selectAll", false, null);
+        await waitFrames(24);
+        document.execCommand("delete", false, null);
+        await waitFrames(24);
+      } catch (e) {}
+    }
+
+    // 3. UTAMA: Synthetic ClipboardEvent("paste") -> hanya Draft.js EditorState yang merender (0% native DOM ghost text!)
+    let handledByPaste = false;
+    try {
+      const dt = new DataTransfer();
+      dt.setData("text/plain", text);
+      const pasteEvent = new ClipboardEvent("paste", {
+        clipboardData: dt,
+        bubbles: true,
+        cancelable: true,
+      });
+      // dispatchEvent mengembalikan FALSE jika Draft.js memanggil pasteEvent.preventDefault()
+      const notCancelled = el.dispatchEvent(pasteEvent);
+      if (!notCancelled) {
+        handledByPaste = true;
+      } else {
+        await waitFrames(20);
+        const current = cleanText(el.innerText);
+        if (current && current.includes(text.slice(0, Math.min(12, text.length)))) {
+          handledByPaste = true;
+        }
+      }
+    } catch (e) {
+      console.warn("[Yap Extension] ClipboardEvent paste gagal, lanjut fallback:", e);
+    }
+
+    // 4. Fallback HANYA jika editor bukan Draft.js / tidak menangani event paste
+    if (!handledByPaste) {
+      try {
+        document.execCommand("insertText", false, text);
+      } catch (e) {
+        el.textContent = text;
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+    }
+
+    return true;
+  } finally {
+    reconnectObserverTimer = setTimeout(() => {
+      reconnectObserverTimer = null;
+      isInsertingText = false;
+      if (document.body) {
+        observer.observe(document.body, { childList: true, subtree: true });
+      }
+    }, 450);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// sendMessageSafe — chrome.runtime.sendMessage dengan timeout guard
+// ═══════════════════════════════════════════════════════════════
+function sendMessageSafe(payload, waitMs) {
+  const totalWait = waitMs || 30000;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+
+    const guard = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(
+        new Error(
+          `Service worker tidak merespon (timeout ${Math.round(totalWait / 1000)} detik).`
+        )
+      );
+    }, totalWait);
+
+    const done = (fn, arg) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(guard);
+      fn(arg);
+    };
+
+    try {
+      chrome.runtime.sendMessage(payload, (response) => {
+        const err = chrome.runtime.lastError;
+
+        if (err && /context invalidated|message port closed/i.test(err.message)) {
+          return done(
+            reject,
+            new Error("Extension baru di-reload. Refresh halaman X (F5) lalu coba lagi.")
+          );
+        }
+        if (err && /receiving end does not exist/i.test(err.message)) {
+          return done(
+            reject,
+            new Error(
+              "Service worker belum aktif. Buka chrome://extensions → reload extension, lalu refresh X."
+            )
+          );
+        }
+        if (err) {
+          return done(reject, new Error("Runtime error: " + err.message));
+        }
+        if (response === undefined) {
+          return done(
+            reject,
+            new Error("Service worker tidak mengirim balasan. Refresh halaman X lalu coba lagi.")
+          );
+        }
+        done(resolve, response);
+      });
+    } catch (e) {
+      done(reject, new Error("Extension baru di-reload. Refresh halaman X (F5) lalu coba lagi."));
+    }
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Boot
+// ═══════════════════════════════════════════════════════════════
+loadSettings();
+
+if (document.body) {
+  observer.observe(document.body, { childList: true, subtree: true });
+  insertButtonIntoReplyBoxes();
+} else {
+  window.addEventListener("DOMContentLoaded", () => {
+    observer.observe(document.body, { childList: true, subtree: true });
+    insertButtonIntoReplyBoxes();
+  });
+}
