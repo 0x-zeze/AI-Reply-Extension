@@ -1,6 +1,6 @@
-// X AI Reply - Content Script (v5.0)
+// X AI Reply — Content Script (v5.1 Global Edition)
 // GPU-composited "AI Reply" + Quick Angle Mini-Menu, Alt+R Shortcut,
-// Vision Image Extractor, Multi-Layer Context Engine, Foreign Translation Preview,
+// Vision Image Extractor, Multi-Layer Context Engine, English Translation Preview,
 // & Anti-Double-Text Draft.js Paste Handler.
 
 const DEFAULT_BASE_URL = "https://api.x.ai/v1";
@@ -20,7 +20,7 @@ const settingsCache = {
 };
 let settingsLoaded = false;
 
-// Rate limiting — minimal 2.5 detik antar request sukses
+// Rate limiting — minimum 2.5s between completed requests
 let lastRequestTime = 0;
 const MIN_REQUEST_INTERVAL_MS = 2500;
 
@@ -458,7 +458,7 @@ function showToast(message, options = {}) {
   const closeBtn = document.createElement("button");
   closeBtn.type = "button";
   closeBtn.className = "x-ai-toast-close";
-  closeBtn.setAttribute("aria-label", "Tutup");
+  closeBtn.setAttribute("aria-label", "Close");
   closeBtn.textContent = "×";
   closeBtn.addEventListener("click", (e) => {
     e.preventDefault();
@@ -482,7 +482,7 @@ function openExtensionSettings() {
       void chrome.runtime.lastError;
     });
   } catch (e) {
-    showToast("Extension baru di-update. Refresh halaman X (F5) terlebih dahulu.", {
+    showToast("Extension was recently updated. Please refresh X (F5) first.", {
       type: "warn",
     });
   }
@@ -753,7 +753,7 @@ function normalizeXMediaUrl(rawSrc) {
   }
 }
 
-// Ekstrak URL gambar asli (chart, screenshot, kartu) untuk mode Vision multimodal
+// Extract attached media URLs (charts, screenshots, cards) for multimodal Vision mode
 function extractImageUrls(root, excludeScope) {
   if (!root || typeof root.querySelectorAll !== "function") return [];
   const imgs = root.querySelectorAll(
@@ -1104,7 +1104,7 @@ function getPostContext(replyBox) {
     return dialogFallback || emptyContext;
   }
 
-  // 2. Reply box langsung di dalam <article>
+  // 2. Reply box directly inside <article>
   const ownArticle = replyBox.closest("article");
   if (ownArticle) {
     const extracted = extractDataFromArticle(ownArticle);
@@ -1114,7 +1114,7 @@ function getPostContext(replyBox) {
     }
   }
 
-  // 3. Halaman detail status (/status/<id>) — utamakan focal tweet utama
+  // 3. Status detail page (/status/<id>) — prioritize the primary focal tweet
   const allTweets = [...document.querySelectorAll('article[data-testid="tweet"]')];
   const statusMatch = location.pathname.match(/\/status\/(\d+)/);
   if (statusMatch) {
@@ -1135,7 +1135,7 @@ function getPostContext(replyBox) {
     }
   }
 
-  // 4. Fallback: tweet terdekat di atas kotak balasan
+  // 4. Fallback: nearest tweet above the reply composer
   const boxRect = replyBox.getBoundingClientRect();
   let bestIdx = -1;
   let minDistance = Infinity;
@@ -1244,10 +1244,10 @@ function cleanupOrphanButtons() {
 }
 
 const QUICK_ANGLES = [
-  { id: "agree", label: "👍 Agree", title: "Dukung / setuju dengan alasan konkret" },
-  { id: "ask", label: "🤔 Ask", title: "Ajukan pertanyaan lanjutan singkat" },
-  { id: "counter", label: "⚡ Counter", title: "Beri sudut pandang kritis / skeptis" },
-  { id: "witty", label: "😎 Witty", title: "Komentar santai / dry humor" },
+  { id: "agree", label: "👍 Agree", title: "Co-sign / agree with one concrete reason" },
+  { id: "ask", label: "🤔 Ask", title: "Ask a sharp, curious follow-up question" },
+  { id: "counter", label: "⚡ Counter", title: "Offer a calm skeptical / contrarian angle" },
+  { id: "witty", label: "😎 Witty", title: "Drop a dry, effortless witty observation" },
 ];
 
 function insertButtonIntoReplyBoxes() {
@@ -1260,7 +1260,7 @@ function insertButtonIntoReplyBoxes() {
 
   injectStyles();
 
-  // Fase 1: Batch DOM reads
+  // Phase 1: Batch DOM reads
   const pendingMounts = [];
   for (let i = 0; i < replyBoxes.length; i++) {
     const box = replyBoxes[i];
@@ -1282,7 +1282,7 @@ function insertButtonIntoReplyBoxes() {
     pendingMounts.push({ box, container, needsRelative });
   }
 
-  // Fase 2: Batch DOM writes
+  // Phase 2: Batch DOM writes
   for (let i = 0; i < pendingMounts.length; i++) {
     const { box, container, needsRelative } = pendingMounts[i];
 
@@ -1296,7 +1296,7 @@ function insertButtonIntoReplyBoxes() {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "x-ai-reply-button";
-    btn.title = "Generate AI Reply (Alt+R) · Hover untuk pilih sudut pandang cepat";
+    btn.title = "Generate AI Reply (Alt+R) · Hover for quick reaction angles";
     btn.setAttribute("data-translate", "no");
     setButtonVisualState(btn, "idle");
 
@@ -1393,7 +1393,7 @@ function cleanModelReply(rawText) {
 
 function showForeignTranslationPreview(replyText, langCode, langLabel) {
   if (!settingsCache.translationPreview) return;
-  if (!langCode || langCode === "id" || langCode === "en" || langCode === "same") return;
+  if (!langCode || langCode === "en" || langCode === "same") return;
 
   try {
     chrome.runtime.sendMessage(
@@ -1411,7 +1411,7 @@ function showForeignTranslationPreview(replyText, langCode, langLabel) {
         const tag = String(langCode).toUpperCase();
         showToast(res.translation, {
           type: "translate",
-          title: `Arti Balasan (${tag} → ID)`,
+          title: `Reply Meaning (${tag} → EN)`,
           duration: 8500,
         });
       }
@@ -1426,7 +1426,7 @@ async function generateText(box, btn, mountContainer, angle = "auto") {
     const now = Date.now();
     if (now - lastRequestTime < MIN_REQUEST_INTERVAL_MS) {
       const waitSec = Math.ceil((MIN_REQUEST_INTERVAL_MS - (now - lastRequestTime)) / 1000);
-      showToast(`Tunggu ${waitSec} detik sebelum generate lagi.`, {
+      showToast(`Please wait ${waitSec}s before generating again.`, {
         type: "warn",
         duration: 2400,
       });
@@ -1438,10 +1438,10 @@ async function generateText(box, btn, mountContainer, angle = "auto") {
     }
 
     if (!settingsCache.apiKey.trim()) {
-      showToast("API key belum diisi di pengaturan extension.", {
+      showToast("API key is not configured yet.", {
         type: "warn",
         duration: 6000,
-        actionLabel: "Buka Settings",
+        actionLabel: "Open Settings",
         onAction: openExtensionSettings,
       });
       return;
@@ -1458,7 +1458,7 @@ async function generateText(box, btn, mountContainer, angle = "auto") {
       (Array.isArray(post.imageUrls) && post.imageUrls.length > 0);
 
     if (!hasContent) {
-      showToast("Konteks tweet tidak terdeteksi. Pastikan tweet terlihat di layar.", {
+      showToast("Could not detect post context. Make sure the target post is visible.", {
         type: "warn",
       });
       return;
@@ -1482,14 +1482,14 @@ async function generateText(box, btn, mountContainer, angle = "auto") {
     );
 
     if (!result || result.error) {
-      const errObj = new Error(result?.error || "Gagal menghubungi API");
+      const errObj = new Error(result?.error || "Failed to contact API");
       errObj.code = result?.code || "";
       throw errObj;
     }
 
     if (!result.ok) {
       const rawErr = result.data?.error;
-      let msg = "Error upstream";
+      let msg = "Upstream API error";
       if (typeof rawErr === "string" && rawErr.trim()) msg = rawErr;
       else if (rawErr?.message) msg = rawErr.message;
       else if (typeof rawErr?.error === "string") msg = rawErr.error;
@@ -1514,15 +1514,15 @@ async function generateText(box, btn, mountContainer, angle = "auto") {
         /<think\b|<thinking\b/i.test(String(rawReply || ""))
       ) {
         throw new Error(
-          "Model reasoning kehabisan token sebelum menulis jawaban akhir. Coba klik lagi atau gunakan model yang lebih cepat."
+          "Reasoning model ran out of tokens before writing the final reply. Try again or switch to a faster model."
         );
       }
-      throw new Error("Model mengembalikan respon kosong.");
+      throw new Error("Model returned an empty response.");
     }
 
     const inserted = await insertTextProperly(box, replyText, mountContainer);
     if (!inserted) {
-      showToast("Kotak balasan sudah tertutup sebelum balasan selesai.", {
+      showToast("The reply box was closed before generation completed.", {
         type: "warn",
       });
       return;
@@ -1536,25 +1536,25 @@ async function generateText(box, btn, mountContainer, angle = "auto") {
       }
     }, 1400);
 
-    // Non-blocking preview terjemahan Indonesia saat membalas bahasa asing (ZH/JA/KO/AR/RU/ES/dll.)
+    // Non-blocking English translation preview when replying in any non-English language
     showForeignTranslationPreview(
       replyText,
       result.detectedLang,
       result.detectedLangLabel
     );
   } catch (err) {
-    console.error("[Yap Extension] Error:", err);
+    console.error("[X AI Reply] Error:", err);
     const msg = err?.message || String(err);
     const needsPerm =
-      err?.code === "no_permission" || /no_permission|izin akses|izin host/i.test(msg);
+      err?.code === "no_permission" || /no_permission|host permission/i.test(msg);
 
     if (needsPerm) {
       showToast(
-        "Izin host untuk Base URL belum diberikan. Buka Settings lalu klik \"Beri Izin Host\".",
+        "Host permission for your Base URL is not granted yet. Open Settings and click \"Allow Host Access\".",
         {
           type: "error",
           duration: 7500,
-          actionLabel: "Buka Settings",
+          actionLabel: "Open Settings",
           onAction: openExtensionSettings,
         }
       );
@@ -1569,7 +1569,7 @@ async function generateText(box, btn, mountContainer, angle = "auto") {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// insertTextProperly — Anti Double-Text untuk Draft.js X
+// insertTextProperly — Ghost-Free Draft.js Paste Handler
 // ═══════════════════════════════════════════════════════════════
 function waitFrames(ms = 24) {
   return new Promise((resolve) => {
@@ -1621,7 +1621,7 @@ async function insertTextProperly(el, text, fallbackScope) {
         await waitFrames(16);
       }
       if (document.activeElement !== el) {
-        console.error("[Yap Extension] Tidak bisa focus pada reply box.");
+        console.error("[X AI Reply] Could not focus reply editor.");
         return false;
       }
     }
@@ -1655,7 +1655,7 @@ async function insertTextProperly(el, text, fallbackScope) {
         }
       }
     } catch (e) {
-      console.warn("[Yap Extension] ClipboardEvent paste gagal, lanjut fallback:", e);
+      console.warn("[X AI Reply] ClipboardEvent paste failed, trying fallback:", e);
     }
 
     if (!handledByPaste) {
@@ -1680,7 +1680,7 @@ async function insertTextProperly(el, text, fallbackScope) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// Keyboard Shortcut: Alt + R untuk langsung trigger AI Reply
+// Keyboard Shortcut: Alt + R to trigger AI Reply immediately
 // ═══════════════════════════════════════════════════════════════
 function findTargetButtonForShortcut() {
   const activeEl = document.activeElement;
@@ -1725,7 +1725,7 @@ if (typeof document.addEventListener === "function") {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// sendMessageSafe — chrome.runtime.sendMessage dengan timeout guard
+// sendMessageSafe — chrome.runtime.sendMessage with timeout guard
 // ═══════════════════════════════════════════════════════════════
 function sendMessageSafe(payload, waitMs) {
   const totalWait = waitMs || 30000;
@@ -1737,7 +1737,7 @@ function sendMessageSafe(payload, waitMs) {
       settled = true;
       reject(
         new Error(
-          `Service worker tidak merespon (timeout ${Math.round(totalWait / 1000)} detik).`
+          `Service worker did not respond (timed out after ${Math.round(totalWait / 1000)}s).`
         )
       );
     }, totalWait);
@@ -1756,14 +1756,14 @@ function sendMessageSafe(payload, waitMs) {
         if (err && /context invalidated|message port closed/i.test(err.message)) {
           return done(
             reject,
-            new Error("Extension baru di-reload. Refresh halaman X (F5) lalu coba lagi.")
+            new Error("Extension was reloaded. Please refresh X (F5) and try again.")
           );
         }
         if (err && /receiving end does not exist/i.test(err.message)) {
           return done(
             reject,
             new Error(
-              "Service worker belum aktif. Buka chrome://extensions → reload extension, lalu refresh X."
+              "Service worker is inactive. Open chrome://extensions → reload extension, then refresh X."
             )
           );
         }
@@ -1773,13 +1773,13 @@ function sendMessageSafe(payload, waitMs) {
         if (response === undefined) {
           return done(
             reject,
-            new Error("Service worker tidak mengirim balasan. Refresh halaman X lalu coba lagi.")
+            new Error("Service worker returned no response. Please refresh X and try again.")
           );
         }
         done(resolve, response);
       });
     } catch (e) {
-      done(reject, new Error("Extension baru di-reload. Refresh halaman X (F5) lalu coba lagi."));
+      done(reject, new Error("Extension was reloaded. Please refresh X (F5) and try again."));
     }
   });
 }

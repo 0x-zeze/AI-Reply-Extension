@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="id">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>X AI Reply — Pengaturan</title>
+  <title>X AI Reply — Settings</title>
   <style>
     :root {
       --bg: #f6f8fa;
@@ -776,36 +776,36 @@
         <div>
           <div class="brand-title-row">
             <h1>X AI Reply</h1>
-            <span class="version-tag">v5.0</span>
+            <span class="version-tag">v5.1</span>
           </div>
           <p class="brand-sub">Multilingual, Vision, Quick Angles &amp; Multi-Profile AI Reply Engine.</p>
         </div>
       </div>
       <div id="readinessBadge" class="status-pill" data-tone="warn">
         <span class="dot"></span>
-        <span id="readinessText">Memeriksa…</span>
+        <span id="readinessText">Checking…</span>
       </div>
     </header>
 
     <!-- Multi-Profile + API & Model Settings -->
     <section class="panel">
       <div class="section-head">
-        <h2 class="section-title">Profil API &amp; Model</h2>
+        <h2 class="section-title">API Profiles &amp; Model</h2>
       </div>
-      <p class="section-desc">Simpan hingga 6 profil API berbeda (mis. Groq cepat &amp; Grok/Claude riset) dan ganti instan dari Popup.</p>
+      <p class="section-desc">Save up to 6 API profiles (e.g., fast Groq &amp; deep-reasoning Grok/Claude) and switch in 1 click from the toolbar popup.</p>
 
       <div class="profile-bar">
         <div class="profile-tabs-row">
           <div id="profileTabs" class="profile-tabs"></div>
-          <button type="button" id="addProfile" class="profile-add-btn">+ Profil Baru</button>
+          <button type="button" id="addProfile" class="profile-add-btn">+ New Profile</button>
         </div>
         <div class="profile-meta-row">
-          <input type="text" id="profileName" placeholder="Nama profil (mis. Grok Utama)" maxlength="28">
-          <button type="button" id="deleteProfile" class="btn-danger-ghost">Hapus</button>
+          <input type="text" id="profileName" placeholder="Profile name (e.g. Main Grok)" maxlength="28">
+          <button type="button" id="deleteProfile" class="btn-danger-ghost">Delete</button>
         </div>
       </div>
 
-      <div class="chip-row" role="group" aria-label="Preset Provider">
+      <div class="chip-row" role="group" aria-label="Provider Presets">
         <button type="button" class="chip provider-chip" data-url="https://api.x.ai/v1" data-model-hint="grok-4.6-high">xAI Grok</button>
         <button type="button" class="chip provider-chip" data-url="https://api.openai.com/v1" data-model-hint="gpt-4o-mini">OpenAI</button>
         <button type="button" class="chip provider-chip" data-url="https://api.groq.com/openai/v1" data-model-hint="llama-3.3-70b-versatile">Groq</button>
@@ -815,11 +815,11 @@
 
       <div class="field">
         <div class="label-row">
-          <label for="baseUrl">Base URL API</label>
-          <span id="permBadge" class="mini-badge">Memeriksa izin…</span>
+          <label for="baseUrl">API Base URL</label>
+          <span id="permBadge" class="mini-badge">Checking access…</span>
         </div>
         <input type="text" id="baseUrl" placeholder="https://api.x.ai/v1" spellcheck="false" autocomplete="off">
-        <div class="hint">Otomatis memanggil endpoint <code>/chat/completions</code>. Sertakan <code>https://</code> atau <code>http://</code> beserta port jika memakai proxy/VPS.</div>
+        <div class="hint">Automatically appends <code>/chat/completions</code>. Include <code>https://</code> or <code>http://</code> and port if using a custom gateway or local server.</div>
       </div>
 
       <div class="field">
@@ -828,7 +828,7 @@
         </div>
         <div class="input-wrap">
           <input type="password" id="apiKey" placeholder="xxx" spellcheck="false" autocomplete="off">
-          <button type="button" id="toggleKey" class="icon-btn" title="Tampilkan / sembunyikan API Key" aria-label="Tampilkan API Key">
+          <button type="button" id="toggleKey" class="icon-btn" title="Show / hide API Key" aria-label="Show API Key">
             <svg id="eyeOpenIcon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7">
               <path d="M2.1 10C3.7 6.3 6.6 4.2 10 4.2C13.4 4.2 16.3 6.3 17.9 10C16.3 13.7 13.4 15.8 10 15.8C6.6 15.8 3.7 13.7 2.1 10Z" stroke-linecap="round" stroke-linejoin="round"/>
               <circle cx="10" cy="10" r="2.6"/>
@@ -843,21 +843,21 @@
       <div class="grid-2">
         <div class="field">
           <div class="label-row">
-            <label for="model">Nama Model</label>
+            <label for="model">Model Name</label>
           </div>
           <input type="text" id="model" placeholder="grok-4.6-high" spellcheck="false">
-          <div class="hint">Bebas sesuai provider (mis. <code>grok-4.6-high</code>, <code>gpt-4o</code>).</div>
+          <div class="hint">Any model ID supported by your provider (e.g., <code>grok-4.6-high</code>, <code>gpt-4o</code>).</div>
         </div>
 
         <div class="field">
           <div class="label-row">
-            <label for="timeout">Timeout Request (detik)</label>
+            <label for="timeout">Request Timeout (sec)</label>
           </div>
           <div class="timeout-control">
-            <input type="range" id="timeoutRange" min="5" max="180" step="5" value="60" aria-label="Slider Timeout">
+            <input type="range" id="timeoutRange" min="5" max="180" step="5" value="60" aria-label="Timeout Slider">
             <input type="number" id="timeout" min="5" max="180" step="5" placeholder="60">
           </div>
-          <div class="hint">5–180 dtk. Naikkan untuk model reasoning.</div>
+          <div class="hint">5–180s. Increase for reasoning models.</div>
         </div>
       </div>
     </section>
@@ -865,14 +865,14 @@
     <!-- Smart Power Features -->
     <section class="panel">
       <div class="section-head">
-        <h2 class="section-title">Fitur Pintar &amp; Pintasan</h2>
-        <button type="button" id="clearMemory" class="link-btn">Reset Memori Variasi</button>
+        <h2 class="section-title">Smart Features &amp; Shortcuts</h2>
+        <button type="button" id="clearMemory" class="link-btn">Reset Variety Memory</button>
       </div>
       <div class="toggle-list">
         <div class="toggle-item">
           <div class="toggle-info">
-            <strong>Vision Mode (Baca Gambar, Chart &amp; Screenshot)</strong>
-            <span>Kirim gambar tweet ke model multimodal. Otomatis fallback ke teks murni jika model belum mendukung Vision.</span>
+            <strong>Vision Mode (Read Charts, Images &amp; Screenshots)</strong>
+            <span>Send attached post images to multimodal models. Automatically falls back to plain text if your model does not support Vision.</span>
           </div>
           <label class="switch" aria-label="Vision Mode">
             <input type="checkbox" id="visionMode" checked>
@@ -882,8 +882,8 @@
 
         <div class="toggle-item">
           <div class="toggle-info">
-            <strong>Translation Preview (Arti Balasan Bahasa Asing)</strong>
-            <span>Saat membalas post Mandarin, Jepang, Korea, Arab, dll., tampilkan toast arti Bahasa Indonesia-nya agar aman dicek sebelum kirim.</span>
+            <strong>Translation Preview (Non-English Reply Meaning)</strong>
+            <span>When replying to Chinese, Japanese, Korean, Arabic, Indonesian, or other non-English posts, show an English meaning preview toast before you send.</span>
           </div>
           <label class="switch" aria-label="Translation Preview">
             <input type="checkbox" id="translationPreview" checked>
@@ -893,35 +893,35 @@
 
         <div class="toggle-item">
           <div class="toggle-info">
-            <strong>Pintasan Keyboard <span class="kbd">Alt</span> + <span class="kbd">R</span></strong>
-            <span>Tekan <code>Alt + R</code> langsung di kotak balasan atau modal X untuk memicu AI Reply tanpa klik mouse.</span>
+            <strong>Keyboard Shortcut <span class="kbd">Alt</span> + <span class="kbd">R</span></strong>
+            <span>Press <code>Alt + R</code> directly inside any reply box or modal on X to generate or regenerate a reply without clicking.</span>
           </div>
-          <label class="switch" aria-label="Shortcut Alt+R">
+          <label class="switch" aria-label="Alt+R Shortcut">
             <input type="checkbox" id="shortcutEnabled" checked>
             <span class="slider"></span>
           </label>
         </div>
       </div>
-      <div id="memoryStatus" class="hint" style="margin-top:8px;">Memori Anti-Repetisi aktif otomatis (menyimpan 8 balasan terakhir secara lokal agar gaya kalimat tidak monoton).</div>
+      <div id="memoryStatus" class="hint" style="margin-top:8px;">Anti-Repetition Memory is active automatically (stores your last 8 replies locally so sentence structures stay fresh and varied).</div>
     </section>
 
     <!-- Persona & Tone Prompt -->
     <section class="panel">
       <div class="section-head">
-        <h2 class="section-title">Gaya Bahasa &amp; Tone Balasan</h2>
+        <h2 class="section-title">Reply Persona &amp; Tone</h2>
         <button type="button" id="resetPrompt" class="link-btn">Reset Default</button>
       </div>
-      <p class="section-desc">Bahasa balasan otomatis mengikuti bahasa post target (Indonesia, Inggris, Mandarin/China, Jepang, Korea, Arab, Rusia, Spanyol, dll.). Hover tombol <strong>AI Reply</strong> di X untuk memilih sudut cepat (<em>Agree / Ask / Counter / Witty</em>).</p>
+      <p class="section-desc">Reply language automatically matches the target post (English, Chinese, Japanese, Korean, Indonesian, Arabic, Russian, Spanish, etc.). Hover the <strong>AI Reply</strong> button on X for quick reaction angles (<em>Agree / Ask / Counter / Witty</em>).</p>
 
-      <div class="chip-row" role="group" aria-label="Preset Gaya">
-        <button type="button" class="chip tone-chip" data-tone="all lowercase, under 10 words, dry and effortless, sound like a real person typing from phone, no emojis">Santai &amp; Dry (Default)</button>
-        <button type="button" class="chip tone-chip" data-tone="clever, witty one-liner, sharp observation, casual lowercase, zero clichés, under 12 words">Witty &amp; Tajam</button>
+      <div class="chip-row" role="group" aria-label="Tone Presets">
+        <button type="button" class="chip tone-chip" data-tone="all lowercase, under 10 words, dry and effortless, sound like a real person typing from phone, no emojis">Casual &amp; Dry (Default)</button>
+        <button type="button" class="chip tone-chip" data-tone="clever, witty one-liner, sharp observation, casual lowercase, zero clichés, under 12 words">Witty &amp; Sharp</button>
         <button type="button" class="chip tone-chip" data-tone="crypto-native CT vibe, grounded take on the thesis or chart, concise lowercase, under 12 words, no hype emojis">Crypto / CT Native</button>
-        <button type="button" class="chip tone-chip" data-tone="curious and thoughtful, ask a short smart follow-up or add one concrete angle, casual lowercase, under 13 words">Diskusi Kritis</button>
+        <button type="button" class="chip tone-chip" data-tone="curious and thoughtful, ask a short smart follow-up or add one concrete angle, casual lowercase, under 13 words">Critical Discussion</button>
       </div>
 
       <div class="field">
-        <textarea id="prompt" placeholder="Contoh: Short, casual, slightly dry. No hashtags. Sound like a real human typing on phone."></textarea>
+        <textarea id="prompt" placeholder="Example: Short, casual, slightly dry. No hashtags. Sound like a real human typing on mobile."></textarea>
       </div>
 
       <div class="save-row">
@@ -929,7 +929,7 @@
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M3.2 8.4L6.4 11.6L12.8 4.8" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
-          <span id="saveLabel">Simpan Pengaturan</span>
+          <span id="saveLabel">Save Settings</span>
         </button>
         <div id="status" role="status" aria-live="polite"></div>
       </div>
@@ -938,27 +938,27 @@
     <!-- Permissions & Connection Test -->
     <section class="panel">
       <div class="section-head">
-        <h2 class="section-title">Izin Domain &amp; Diagnostik API</h2>
+        <h2 class="section-title">Domain Access &amp; API Diagnostics</h2>
       </div>
       <div class="action-grid">
         <div class="subcard">
           <div>
-            <h3>Izin Akses Host</h3>
-            <p>Browser memblokir domain baru secara default. Jika memakai selain <code>api.x.ai</code>, pastikan izin aktif.</p>
+            <h3>Host Access Permission</h3>
+            <p>Browsers block custom API domains by default. If your Base URL is not <code>api.x.ai</code>, make sure host access is allowed.</p>
           </div>
           <div>
-            <button type="button" id="grant" class="btn btn-ghost">Beri Izin Host</button>
+            <button type="button" id="grant" class="btn btn-ghost">Allow Host Access</button>
             <div id="grantStatus" class="result-box"></div>
           </div>
         </div>
 
         <div class="subcard">
           <div>
-            <h3>Tes Koneksi Langsung</h3>
-            <p>Kirim ping ringan lewat background worker untuk memverifikasi Base URL, API key, &amp; model.</p>
+            <h3>Live Connection Test</h3>
+            <p>Send a lightweight ping via the background worker to verify your Base URL, API key, &amp; model.</p>
           </div>
           <div>
-            <button type="button" id="test" class="btn btn-soft">Tes Koneksi API</button>
+            <button type="button" id="test" class="btn btn-soft">Test API Connection</button>
             <div id="testStatus" class="result-box"></div>
           </div>
         </div>

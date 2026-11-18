@@ -5,7 +5,7 @@
 
   <p>
     <img src="https://img.shields.io/badge/Manifest-V3-1d9bf0?style=flat-square" alt="Manifest V3" />
-    <img src="https://img.shields.io/badge/Version-5.0-4f46e5?style=flat-square" alt="Version 5.0" />
+    <img src="https://img.shields.io/badge/Version-5.1-4f46e5?style=flat-square" alt="Version 5.1" />
     <img src="https://img.shields.io/badge/Vision-Multimodal_Ready-059669?style=flat-square" alt="Vision Ready" />
     <img src="https://img.shields.io/badge/UI-Auto_Dark%2FLight_60fps-10b981?style=flat-square" alt="60fps UI" />
     <img src="https://img.shields.io/badge/API-OpenAI_Compatible-7c3aed?style=flat-square" alt="OpenAI Compatible" />
@@ -84,8 +84,8 @@
 ## Configuration & How to Use
 
 ### 1. Set Up Your API Profile(s)
-1. Click the **X AI Reply** toolbar icon → **Buka Settings** (Open Settings).
-2. Choose a provider preset or enter any OpenAI-compatible **Base URL**, **API Key**, and **Model**:
+1. Click the **X AI Reply** toolbar icon → **Open Settings**.
+2. Choose a provider preset or enter any OpenAI-compatible **API Base URL**, **API Key**, and **Model Name**:
    ```text
    Profile Name : Main Profile
    Base URL     : https://api.x.ai/v1
@@ -93,8 +93,8 @@
    Model        : grok-4.6-high
    Timeout      : 60
    ```
-3. *(Optional)* Click **+ Profil Baru** to add extra API profiles (up to 6) for instant switching from the toolbar popup.
-4. Click **Simpan Pengaturan** (Save) and approve the browser host-permission prompt if using a custom domain, then click **Tes Koneksi API** to verify connectivity and latency.
+3. *(Optional)* Click **+ New Profile** to add extra API profiles (up to 6) for instant switching from the toolbar popup.
+4. Click **Save Settings** and approve the browser host-permission prompt if using a custom domain, then click **Test API Connection** to verify connectivity and latency.
 
 ### Supported Provider Examples
 
@@ -110,7 +110,7 @@
 ### 2. Generate Replies on X
 - **Default Smart Reply:** Click **✨ AI Reply** (or press **`Alt + R`**) inside any X reply or quote box.
 - **Specific Reaction Angle:** Hover over **✨ AI Reply** and click **👍 Agree**, **🤔 Ask**, **⚡ Counter**, or **😎 Witty**.
-- **Foreign Language Verification:** When replying to Chinese, Japanese, Korean, or other foreign posts, check the purple **Translation Preview** toast at the bottom-right to confirm the meaning of your reply before clicking X's **Reply** button.
+- **Foreign Language Verification:** When replying to Chinese, Japanese, Korean, Indonesian, or other non-English posts, check the purple **Translation Preview** (`Reply Meaning → EN`) toast at the bottom-right to confirm the exact English meaning of your reply before clicking X's **Reply** button.
 
 ---
 
@@ -118,7 +118,7 @@
 
 ```text
 AI-Reply-Extension/
-├── manifest.json     # Chrome Extension Manifest V3 configuration (v5.0)
+├── manifest.json     # Chrome Extension Manifest V3 configuration (v5.1)
 ├── background.js     # Service worker: API proxy, vision fallback, multilingual & anti-repetition engine
 ├── content.js        # X DOM & image extractor, Quick Angle UI, Alt+R shortcut, Draft.js paste handler
 ├── options.html      # Full Settings Dashboard UI (Multi-profile, smart toggles, Auto Dark/Light)

@@ -68,20 +68,20 @@ function hostLabelFor(baseUrl) {
 }
 
 function extractUpstreamError(data) {
-  if (!data) return "(tanpa detail)";
+  if (!data) return "(no details)";
   const err = data.error;
   if (typeof err === "string" && err.trim()) return err.trim();
   if (err && typeof err === "object") {
     if (typeof err.message === "string" && err.message.trim()) return err.message.trim();
     if (typeof err.error === "string" && err.error.trim()) return err.error.trim();
-    if (typeof err.code === "string" && err.code.trim()) return `Kode: ${err.code}`;
+    if (typeof err.code === "string" && err.code.trim()) return `Code: ${err.code}`;
     try {
       return JSON.stringify(err).slice(0, 240);
     } catch (e) {}
   }
   if (typeof data.message === "string" && data.message.trim()) return data.message.trim();
   if (typeof data._raw === "string" && data._raw.trim()) return data._raw.trim().slice(0, 240);
-  return "(tanpa detail)";
+  return "(no details)";
 }
 
 function showResultBox(el, text, tone) {
@@ -103,7 +103,7 @@ function showResultBox(el, text, tone) {
 function ensureValidProfiles(data) {
   const fallbackProfile = {
     id: "prof_default",
-    name: "Profil Utama",
+    name: "Main Profile",
     baseUrl: normalizeBaseUrl(data.baseUrl || DEFAULTS.baseUrl),
     apiKey: String(data.apiKey || "").trim(),
     model: String(data.model || DEFAULTS.model).trim(),
@@ -121,15 +121,22 @@ function ensureValidProfiles(data) {
   const sanitized = data.profiles
     .filter((p) => p && typeof p === "object")
     .slice(0, MAX_PROFILES)
-    .map((p, idx) => ({
-      id: String(p.id || `prof_${idx + 1}`),
-      name: String(p.name || `Profil ${idx + 1}`).trim() || `Profil ${idx + 1}`,
-      baseUrl: normalizeBaseUrl(p.baseUrl || DEFAULTS.baseUrl),
-      apiKey: String(p.apiKey || "").trim(),
-      model: String(p.model || DEFAULTS.model).trim(),
-      prompt: p.prompt !== undefined ? String(p.prompt) : DEFAULTS.prompt,
-      timeout: clampTimeout(p.timeout),
-    }));
+    .map((p, idx) => {
+      const rawName = String(p.name || "").trim();
+      const normalizedName =
+        rawName === "Profil Utama"
+          ? "Main Profile"
+          : rawName || `Profile ${idx + 1}`;
+      return {
+        id: String(p.id || `prof_${idx + 1}`),
+        name: normalizedName,
+        baseUrl: normalizeBaseUrl(p.baseUrl || DEFAULTS.baseUrl),
+        apiKey: String(p.apiKey || "").trim(),
+        model: String(p.model || DEFAULTS.model).trim(),
+        prompt: p.prompt !== undefined ? String(p.prompt) : DEFAULTS.prompt,
+        timeout: clampTimeout(p.timeout),
+      };
+    });
 
   if (sanitized.length === 0) {
     return { profiles: [fallbackProfile], activeId: fallbackProfile.id };
@@ -151,7 +158,7 @@ function getActiveProfileObj() {
 function commitFormIntoCurrentProfile() {
   const cur = getActiveProfileObj();
   if (!cur) return;
-  cur.name = $("profileName").value.trim() || cur.name || "Profil";
+  cur.name = $("profileName").value.trim() || cur.name || "Profile";
   cur.baseUrl = currentBaseUrl();
   cur.apiKey = $("apiKey").value.trim();
   cur.model = $("model").value.trim() || DEFAULTS.model;
@@ -162,7 +169,7 @@ function commitFormIntoCurrentProfile() {
 function populateFormFromProfile(prof) {
   if (!prof) return;
   const t = clampTimeout(prof.timeout);
-  $("profileName").value = prof.name || "Profil";
+  $("profileName").value = prof.name || "Profile";
   $("baseUrl").value = prof.baseUrl || DEFAULTS.baseUrl;
   $("apiKey").value = prof.apiKey || "";
   $("model").value = prof.model || DEFAULTS.model;
@@ -218,7 +225,6 @@ function switchProfile(targetId) {
   populateFormFromProfile(next);
   renderProfileTabs();
 
-  // Minta izin host bila domain baru belum diizinkan (langsung dalam klik user gesture)
   const pattern = originPatternFor(next.baseUrl);
   if (pattern && chrome.permissions && chrome.permissions.request) {
     try {
@@ -231,7 +237,7 @@ function switchProfile(targetId) {
 
   chrome.storage.sync.set(buildStoragePayloadFromActive(), () => {
     void chrome.runtime.lastError;
-    $("status").textContent = `Profil "${next.name}" diaktifkan`;
+    $("status").textContent = `Switched to "${next.name}"`;
     $("status").style.color = "var(--green)";
     setTimeout(() => {
       $("status").textContent = "";
@@ -245,7 +251,7 @@ function addNewProfile() {
   const nextNum = profilesState.length + 1;
   const newProf = {
     id: "prof_" + Date.now(),
-    name: `Profil ${nextNum}`,
+    name: `Profile ${nextNum}`,
     baseUrl: DEFAULTS.baseUrl,
     apiKey: "",
     model: DEFAULTS.model,
@@ -270,7 +276,7 @@ function deleteCurrentProfile() {
 
   chrome.storage.sync.set(buildStoragePayloadFromActive(), () => {
     void chrome.runtime.lastError;
-    $("status").textContent = "Profil dihapus";
+    $("status").textContent = "Profile deleted";
     $("status").style.color = "var(--muted)";
     setTimeout(() => {
       $("status").textContent = "";
@@ -306,48 +312,48 @@ function refreshPermissionAndReadiness() {
   const readinessText = $("readinessText");
 
   if (!pattern) {
-    permBadge.textContent = "URL tidak valid";
+    permBadge.textContent = "Invalid URL";
     permBadge.dataset.tone = "error";
     delete grantBtn.dataset.attention;
     readinessBadge.dataset.tone = "warn";
-    readinessText.textContent = "Base URL tidak valid";
+    readinessText.textContent = "Invalid Base URL";
     return;
   }
 
   const host = hostLabelFor(normalized);
 
   if (!chrome.permissions || !chrome.permissions.contains) {
-    permBadge.textContent = `Izin aktif · ${host}`;
+    permBadge.textContent = `Access active · ${host}`;
     permBadge.dataset.tone = "ok";
     delete grantBtn.dataset.attention;
     readinessBadge.dataset.tone = hasKey ? "ok" : "warn";
-    readinessText.textContent = hasKey ? "Siap digunakan" : "API Key belum diisi";
+    readinessText.textContent = hasKey ? "Ready" : "Missing API Key";
     return;
   }
 
   chrome.permissions.contains({ origins: [pattern] }, (granted) => {
     void chrome.runtime.lastError;
     if (granted) {
-      permBadge.textContent = `✓ Izin aktif · ${host}`;
+      permBadge.textContent = `✓ Access active · ${host}`;
       permBadge.dataset.tone = "ok";
-      grantBtn.textContent = "Izin Host Aktif";
+      grantBtn.textContent = "Host Access Active";
       delete grantBtn.dataset.attention;
     } else {
-      permBadge.textContent = `Perlu izin · ${host}`;
+      permBadge.textContent = `Needs access · ${host}`;
       permBadge.dataset.tone = "warn";
-      grantBtn.textContent = `Beri Izin (${host})`;
+      grantBtn.textContent = `Allow (${host})`;
       grantBtn.dataset.attention = "true";
     }
 
     if (!hasKey) {
       readinessBadge.dataset.tone = "warn";
-      readinessText.textContent = "API Key belum diisi";
+      readinessText.textContent = "Missing API Key";
     } else if (!granted) {
       readinessBadge.dataset.tone = "warn";
-      readinessText.textContent = "Perlu izin host";
+      readinessText.textContent = "Needs Host Access";
     } else {
       readinessBadge.dataset.tone = "ok";
-      readinessText.textContent = "Siap digunakan";
+      readinessText.textContent = "Ready";
     }
   });
 }
@@ -358,8 +364,8 @@ function refreshPermissionAndReadiness() {
 function loadSettings() {
   chrome.storage.sync.get(DEFAULTS, (data) => {
     if (chrome.runtime.lastError) {
-      console.error("[Yap Extension] Storage load error:", chrome.runtime.lastError.message);
-      $("status").textContent = "Gagal memuat settings.";
+      console.error("[X AI Reply] Storage load error:", chrome.runtime.lastError.message);
+      $("status").textContent = "Failed to load settings.";
       $("status").style.color = "var(--red)";
       return;
     }
@@ -393,7 +399,7 @@ function saveSettings() {
       chrome.permissions.request({ origins: [pattern] }, (granted) => {
         void chrome.runtime.lastError;
         if (granted) {
-          showResultBox($("grantStatus"), `Izin aktif untuk ${pattern}`, "ok");
+          showResultBox($("grantStatus"), `Access active for ${pattern}`, "ok");
         }
         refreshPermissionAndReadiness();
       });
@@ -406,21 +412,21 @@ function saveSettings() {
     const saveLabel = $("saveLabel");
 
     if (chrome.runtime.lastError) {
-      status.textContent = "Gagal menyimpan: " + chrome.runtime.lastError.message;
+      status.textContent = "Failed to save: " + chrome.runtime.lastError.message;
       status.style.color = "var(--red)";
       return;
     }
 
     saveBtn.dataset.saved = "true";
-    saveLabel.textContent = "Tersimpan";
-    status.textContent = `Profil "${active.name}" tersimpan`;
+    saveLabel.textContent = "Saved";
+    status.textContent = `Profile "${active.name}" saved`;
     status.style.color = "var(--green)";
     refreshPermissionAndReadiness();
 
     if (saveResetTimer) clearTimeout(saveResetTimer);
     saveResetTimer = setTimeout(() => {
       delete saveBtn.dataset.saved;
-      saveLabel.textContent = "Simpan Pengaturan";
+      saveLabel.textContent = "Save Settings";
       status.textContent = "";
     }, 2200);
   });
@@ -450,18 +456,18 @@ function grantHostPermission() {
   const pattern = originPatternFor(baseUrl);
 
   if (!pattern) {
-    showResultBox(out, "Base URL tidak valid: " + baseUrl, "error");
+    showResultBox(out, "Invalid Base URL: " + baseUrl, "error");
     refreshPermissionAndReadiness();
     return;
   }
 
   if (!chrome.permissions || !chrome.permissions.request) {
-    showResultBox(out, "API permissions tidak tersedia di browser ini.", "error");
+    showResultBox(out, "Permissions API is not available in this browser.", "error");
     return;
   }
 
   btn.disabled = true;
-  btn.textContent = "Meminta izin…";
+  btn.textContent = "Requesting…";
   showResultBox(out, "", "ok");
 
   chrome.permissions.request({ origins: [pattern] }, (granted) => {
@@ -472,9 +478,9 @@ function grantHostPermission() {
       return;
     }
     if (granted) {
-      showResultBox(out, "✓ Izin diberikan untuk " + pattern, "ok");
+      showResultBox(out, "✓ Access granted for " + pattern, "ok");
     } else {
-      showResultBox(out, "Izin ditolak. Request ke " + pattern + " akan diblokir.", "warn");
+      showResultBox(out, "Access denied. Requests to " + pattern + " will be blocked.", "warn");
     }
     refreshPermissionAndReadiness();
   });
@@ -489,21 +495,21 @@ function testConnection() {
   const model = $("model").value.trim() || DEFAULTS.model;
   const timeoutMs = clampTimeout($("timeout").value) * 1000;
   const pattern = originPatternFor(baseUrl);
-  const idleLabel = "Tes Koneksi API";
+  const idleLabel = "Test API Connection";
 
   if (!pattern) {
-    showResultBox(out, "Base URL tidak valid: " + baseUrl, "error");
+    showResultBox(out, "Invalid Base URL: " + baseUrl, "error");
     return;
   }
 
   if (!apiKey) {
-    showResultBox(out, "API key masih kosong. Masukkan API key terlebih dahulu.", "warn");
+    showResultBox(out, "API key is empty. Please enter your API key first.", "warn");
     $("apiKey").focus();
     return;
   }
 
   btn.disabled = true;
-  btn.textContent = "Menguji koneksi…";
+  btn.textContent = "Testing…";
   showResultBox(out, "", "ok");
 
   let settled = false;
@@ -518,7 +524,7 @@ function testConnection() {
   };
 
   const guard = setTimeout(() => {
-    finish("Timeout menunggu respon dari service worker. Coba reload extension.", "error");
+    finish("Timed out waiting for background worker response. Try reloading the extension.", "error");
   }, timeoutMs + 15000);
 
   const dispatchTest = () => {
@@ -536,7 +542,7 @@ function testConnection() {
           return;
         }
         if (!res) {
-          finish("Background tidak membalas. Reload extension lalu coba lagi.", "error");
+          finish("Background worker did not respond. Reload the extension and try again.", "error");
           return;
         }
         if (res.code === "no_permission" || res.code === "failed_to_fetch") {
@@ -553,7 +559,7 @@ function testConnection() {
         const rawSample =
           msgObj?.content ||
           res.data?.choices?.[0]?.text ||
-          (msgObj?.reasoning_content ? "(reasoning model aktif)" : "");
+          (msgObj?.reasoning_content ? "(reasoning model active)" : "");
         const cleanSample = String(rawSample || "")
           .replace(/<think>[\s\S]*?<\/think>/gi, "")
           .trim()
@@ -561,7 +567,7 @@ function testConnection() {
         const latencyLabel = res.latencyMs ? ` · ${res.latencyMs} ms` : "";
 
         finish(
-          `✓ Terhubung (HTTP ${res.status}${latencyLabel})\nModel: ${model}${cleanSample ? ` · Respon: "${cleanSample}"` : ""}`,
+          `✓ Connected (HTTP ${res.status}${latencyLabel})\nModel: ${model}${cleanSample ? ` · Reply: "${cleanSample}"` : ""}`,
           "ok"
         );
       }
@@ -572,7 +578,7 @@ function testConnection() {
     chrome.permissions.request({ origins: [pattern] }, (granted) => {
       void chrome.runtime.lastError;
       if (!granted) {
-        finish(`Izin akses ke ${pattern} ditolak.`, "warn");
+        finish(`Host access to ${pattern} was denied.`, "warn");
         return;
       }
       dispatchTest();
@@ -597,7 +603,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("profileName").addEventListener("input", () => {
     const cur = getActiveProfileObj();
     if (cur) {
-      cur.name = $("profileName").value.trim() || "Profil";
+      cur.name = $("profileName").value.trim() || "Profile";
       renderProfileTabs();
     }
   });
@@ -609,11 +615,11 @@ document.addEventListener("DOMContentLoaded", () => {
   $("clearMemory").addEventListener("click", () => {
     chrome.runtime.sendMessage({ action: "clearReplyMemory" }, () => {
       void chrome.runtime.lastError;
-      $("memoryStatus").textContent = "✓ Memori variasi balasan berhasil di-reset.";
+      $("memoryStatus").textContent = "✓ Reply variety memory cleared.";
       $("memoryStatus").style.color = "var(--green)";
       setTimeout(() => {
         $("memoryStatus").textContent =
-          "Memori Anti-Repetisi aktif otomatis (menyimpan 8 balasan terakhir secara lokal agar gaya kalimat tidak monoton).";
+          "Anti-Repetition Memory is active automatically (stores your last 8 replies locally so sentence structures stay fresh and varied).";
         $("memoryStatus").style.color = "";
       }, 2400);
     });

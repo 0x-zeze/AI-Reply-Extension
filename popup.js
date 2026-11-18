@@ -40,7 +40,7 @@ function parseBaseOrigin(baseUrl) {
 }
 
 function extractUpstreamError(data) {
-  if (!data) return "(tanpa detail)";
+  if (!data) return "(no details)";
   const err = data.error;
   if (typeof err === "string" && err.trim()) return err.trim();
   if (err && typeof err === "object") {
@@ -51,7 +51,7 @@ function extractUpstreamError(data) {
     } catch (e) {}
   }
   if (typeof data._raw === "string" && data._raw.trim()) return data._raw.trim().slice(0, 180);
-  return "(tanpa detail)";
+  return "(no details)";
 }
 
 function setFeedback(text, tone) {
@@ -96,7 +96,9 @@ function renderProfileStrip() {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "prof-pill";
-    btn.textContent = prof.name || "Profil";
+    const displayName =
+      prof.name === "Profil Utama" ? "Main Profile" : prof.name || "Profile";
+    btn.textContent = displayName;
     btn.dataset.active = prof.id === activeProfileId ? "true" : "false";
     btn.addEventListener("click", () => {
       if (prof.id === activeProfileId) return;
@@ -124,6 +126,9 @@ function activatePopupProfile(prof) {
     } catch (e) {}
   }
 
+  const displayName =
+    prof.name === "Profil Utama" ? "Main Profile" : prof.name || "Profile";
+
   chrome.storage.sync.set(
     {
       baseUrl: currentConfig.baseUrl,
@@ -137,7 +142,7 @@ function activatePopupProfile(prof) {
       void chrome.runtime.lastError;
       renderProfileStrip();
       renderState();
-      setFeedback(`✓ Beralih ke profil "${prof.name}"`, "ok");
+      setFeedback(`✓ Switched to "${displayName}"`, "ok");
     }
   );
 }
@@ -147,14 +152,14 @@ function renderState() {
   const parsed = parseBaseOrigin(base);
   const hasKey = Boolean(currentConfig.apiKey && currentConfig.apiKey.trim());
 
-  $("hostValue").textContent = parsed ? parsed.host : "URL tidak valid";
+  $("hostValue").textContent = parsed ? parsed.host : "Invalid URL";
   $("modelValue").textContent = currentConfig.model || DEFAULTS.model;
 
   if (hasKey) {
-    $("keyValue").textContent = "✓ Terkonfigurasi";
+    $("keyValue").textContent = "✓ Configured";
     $("keyValue").dataset.tone = "ok";
   } else {
-    $("keyValue").textContent = "Belum diisi";
+    $("keyValue").textContent = "Not set";
     $("keyValue").dataset.tone = "warn";
   }
 
@@ -167,7 +172,7 @@ function renderState() {
 
   if (!parsed) {
     badge.dataset.tone = "error";
-    statusText.textContent = "URL Invalid";
+    statusText.textContent = "Invalid URL";
     delete permBanner.dataset.visible;
     return;
   }
@@ -175,27 +180,27 @@ function renderState() {
   if (!chrome.permissions || !chrome.permissions.contains) {
     delete permBanner.dataset.visible;
     badge.dataset.tone = hasKey ? "ok" : "warn";
-    statusText.textContent = hasKey ? "Siap" : "Isi API Key";
+    statusText.textContent = hasKey ? "Ready" : "Set API Key";
     return;
   }
 
   chrome.permissions.contains({ origins: [parsed.pattern] }, (granted) => {
     void chrome.runtime.lastError;
     if (!granted) {
-      $("permBannerText").textContent = `Izin akses ke ${parsed.host} belum aktif.`;
+      $("permBannerText").textContent = `Host access to ${parsed.host} is not active.`;
       permBanner.dataset.visible = "true";
       badge.dataset.tone = "warn";
-      statusText.textContent = "Perlu Izin";
+      statusText.textContent = "Needs Access";
       return;
     }
 
     delete permBanner.dataset.visible;
     if (hasKey) {
       badge.dataset.tone = "ok";
-      statusText.textContent = "Siap";
+      statusText.textContent = "Ready";
     } else {
       badge.dataset.tone = "warn";
-      statusText.textContent = "Isi API Key";
+      statusText.textContent = "Set API Key";
     }
   });
 }
@@ -264,9 +269,9 @@ document.addEventListener("DOMContentLoaded", () => {
     chrome.permissions.request({ origins: [parsed.pattern] }, (granted) => {
       void chrome.runtime.lastError;
       if (granted) {
-        setFeedback(`✓ Izin diberikan untuk ${parsed.host}`, "ok");
+        setFeedback(`✓ Host access granted for ${parsed.host}`, "ok");
       } else {
-        setFeedback("Izin ditolak.", "warn");
+        setFeedback("Host access was denied.", "warn");
       }
       renderState();
     });
@@ -304,16 +309,16 @@ document.addEventListener("DOMContentLoaded", () => {
     const parsed = parseBaseOrigin(currentConfig.baseUrl);
 
     if (!parsed) {
-      setFeedback("Base URL tidak valid. Periksa di Settings.", "error");
+      setFeedback("Invalid Base URL. Check Settings.", "error");
       return;
     }
     if (!currentConfig.apiKey || !currentConfig.apiKey.trim()) {
-      setFeedback("API Key belum diisi. Klik Buka Settings.", "warn");
+      setFeedback("API Key is not set. Click Open Settings.", "warn");
       return;
     }
 
     btn.disabled = true;
-    btn.textContent = "Menguji…";
+    btn.textContent = "Testing…";
     setFeedback("", "ok");
 
     const runPing = () => {
@@ -327,14 +332,14 @@ document.addEventListener("DOMContentLoaded", () => {
         },
         (res) => {
           btn.disabled = false;
-          btn.textContent = "Tes API";
+          btn.textContent = "Test API";
 
           if (chrome.runtime.lastError) {
             setFeedback("Runtime error: " + chrome.runtime.lastError.message, "error");
             return;
           }
           if (!res) {
-            setFeedback("Background tidak merespon.", "error");
+            setFeedback("Background worker did not respond.", "error");
             return;
           }
           if (!res.ok) {
@@ -343,7 +348,7 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
           }
           const ms = res.latencyMs ? ` · ${res.latencyMs} ms` : "";
-          setFeedback(`✓ Koneksi aktif (HTTP ${res.status}${ms})`, "ok");
+          setFeedback(`✓ Connected (HTTP ${res.status}${ms})`, "ok");
           renderState();
         }
       );
@@ -354,8 +359,8 @@ document.addEventListener("DOMContentLoaded", () => {
         void chrome.runtime.lastError;
         if (!granted) {
           btn.disabled = false;
-          btn.textContent = "Tes API";
-          setFeedback(`Izin akses ke ${parsed.host} ditolak.`, "warn");
+          btn.textContent = "Test API";
+          setFeedback(`Host access to ${parsed.host} was denied.`, "warn");
           return;
         }
         renderState();

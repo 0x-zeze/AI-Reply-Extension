@@ -1,6 +1,7 @@
-// Background service worker - proxy API call supaya bebas CORS / mixed-content.
-// v5.0: Anti-Halu, Guaranteed Multilingual Engine, Vision Multimodal + Text Fallback,
-// Quick Reaction Angles, Anti-Repetition Memory, dan Foreign Reply Translation Preview.
+// Background Service Worker — CORS-free API proxy for X AI Reply.
+// v5.1 Global Edition: Anti-Hallucination Grounding, Guaranteed Multilingual Engine,
+// Vision Multimodal + Auto Text Fallback, Quick Reaction Angles, Anti-Repetition Memory,
+// and Live English Translation Preview for non-English replies.
 
 const API_TIMEOUT_MS = 60000;
 const MIN_TIMEOUT_MS = 5000;
@@ -15,7 +16,7 @@ function normalizeTimeout(value) {
   return Math.min(Math.max(Math.round(n), MIN_TIMEOUT_MS), MAX_TIMEOUT_MS);
 }
 
-// Unambiguous Indonesian stopwords & everyday vocabulary
+// Unambiguous Indonesian stopwords & everyday slang (for detecting Indonesian tweets accurately)
 const ID_STOP =
   /\b(yang|yg|dan|ini|itu|tidak|nggak|gak|ga|ngga|dengan|dgn|untuk|utk|dari|dr|ada|akan|sudah|udah|udh|belum|blm|bisa|juga|jg|saya|aku|gue|gw|kamu|lu|elu|kalian|dia|mereka|kita|kami|adalah|karena|krn|kalau|kalo|kl|jadi|jd|pada|atau|lebih|hanya|cuma|sangat|banget|bgt|hari|bukan|loh|lho|sih|dong|nih|tuh|kok|lah|kah|aja|saja|mau|lagi|lg|masih|baru|bikin|pakai|pake|lihat|liat|tahu|tau|gimana|gitu|gini|tapi|tp|memang|emang|kayak|kaya|buat|terus|trs|pas|banyak|semua|orang|kenapa|kapan|dimana|siapa|bagaimana|mantap|keren|parah|anjir|wkwk|wkwkwk|cuy|gan|bang|kak|sekarang|kemarin|besok|makin|paling|jangan|harus|perlu|mungkin|pasti|selalu|pernah|tanpa|sampai|sejak|mulai|cuan|nyangkut|serok|gokil|santuy|bener|benar|bagus|cepat|mahal|murah|beli|jual|dapet|dapat|punya|bilang)\b/g;
 
@@ -133,7 +134,7 @@ function buildAntiRepetitionBlock(recentReplies) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// Language Detection & Validation
+// Language Detection & Output Verification
 // ═══════════════════════════════════════════════════════════════
 function countMatches(re, text) {
   const m = String(text || "").match(re);
@@ -255,6 +256,7 @@ function detectTweetLanguage(text, domLangHint = "") {
 function resolveReplyLanguage(post) {
   const p = post || {};
 
+  // If the post was translated on X ("Translated from Japanese"), preserve the author's original language
   if (p.translatedFromLang) {
     const origKey = normalizeDomLang(p.translatedFromLang);
     if (origKey && DOM_LANG_MAP[origKey]) {
@@ -352,6 +354,7 @@ function isReplyInExpectedLanguage(replyText, lang) {
   return true;
 }
 
+// Strip Latin-only rules ("all lowercase", "under X words") from custom prompts when targeting non-Latin scripts
 function sanitizeStylePromptForLang(systemPrompt, lang) {
   const raw = String(systemPrompt || "").trim();
   if (!raw) return "";
@@ -643,7 +646,7 @@ function buildLanguageAndFormatDirectives(lang, angle = "auto") {
     return {
       formatBlock: [
         "MANDATORY LANGUAGE & FORMAT (BAHASA INDONESIA):",
-        "1. Reply 100% in natural casual Indonesian (bahasa santai/gaul natural seperti orang asli ngetik di HP, bukan terjemahan kaku).",
+        "1. Reply 100% in natural casual Indonesian (casual everyday mobile phrasing, never stiff machine translation).",
         "2. Strictly 1 short sentence, under 14 words.",
         `3. ${punctHintLatin}`,
         "4. Banned clichés: 'setuju banget', 'menarik banget', 'patut ditunggu', 'luar biasa', 'mantap jiwa'.",
@@ -661,7 +664,7 @@ function buildLanguageAndFormatDirectives(lang, angle = "auto") {
         "1. Reply 100% in natural English, 1 single short sentence, strictly under 14 words.",
         `2. ${punctHintLatin}`,
         "3. Banned AI clichés: 'totally agree', 'spot on', 'interesting take', 'time will tell', 'great insight', 'game changer', 'massive', 'bullish on', 'underrated', 'quietly building', 'isn't just X it's Y', 'let that sink in', 'worth watching'.",
-        "4. Sound like a sharp real person typing effortlessly from their phone. Zero Indonesian or non-English words.",
+        "4. Sound like a sharp real person typing effortlessly from their phone. Zero non-English words.",
       ].join("\n"),
       userReminder:
         "Reply to TARGET TWEET 100% in natural 【English】 (1 short sentence under 14 words, all lowercase, no ending period, grounded in the exact topic above, zero non-English words). Output only the reply text:",
@@ -786,20 +789,20 @@ function extractReplyContentFromData(data) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// Endpoint validation + shared fetch runner
+// Endpoint Validation & Shared Fetch Runner
 // ═══════════════════════════════════════════════════════════════
 function validateEndpoint(endpoint) {
-  if (!endpoint) return { error: "Base URL kosong. Isi di Settings." };
+  if (!endpoint) return { error: "Base URL is empty. Set it in Settings." };
   let parsed;
   try {
     parsed = new URL(endpoint);
   } catch (e) {
     return {
-      error: `Base URL tidak valid: "${endpoint}". Contoh benar: https://api.x.ai/v1`,
+      error: `Invalid Base URL: "${endpoint}". Example: https://api.x.ai/v1`,
     };
   }
   if (!/^https?:$/.test(parsed.protocol)) {
-    return { error: `Base URL harus http/https, bukan "${parsed.protocol}"` };
+    return { error: `Base URL must use http:// or https://, not "${parsed.protocol}"` };
   }
   return { parsed, originPattern: parsed.origin + "/*" };
 }
@@ -831,7 +834,7 @@ async function probeOrigin(origin) {
   } catch (e) {
     return {
       reachable: false,
-      reason: e && e.name === "AbortError" ? "tidak ada respon" : (e && e.message) || "gagal",
+      reason: e && e.name === "AbortError" ? "no response" : (e && e.message) || "unreachable",
     };
   } finally {
     clearTimeout(timer);
@@ -845,8 +848,8 @@ async function runCompletion({ endpoint, parsedEndpoint, originPattern, apiKey, 
       ok: false,
       code: "no_permission",
       error:
-        `Extension belum punya izin akses ke ${parsedEndpoint.origin}. ` +
-        `Buka Settings → klik "Beri Izin Host" → Allow.`,
+        `Missing host permission for ${parsedEndpoint.origin}. ` +
+        `Open Settings → click "Allow Host Access" → Allow.`,
     };
   }
 
@@ -904,12 +907,12 @@ async function runCompletion({ endpoint, parsedEndpoint, originPattern, apiKey, 
   if (err.name === "AbortError") {
     const probe = await probeOrigin(parsedEndpoint.origin);
     const verdict = probe.reachable
-      ? `Server di ${parsedEndpoint.origin} hidup (HTTP ${probe.status}), tapi ` +
-        `/chat/completions tidak selesai dalam ${elapsedSec} detik. ` +
-        `Kemungkinan model lambat → naikkan "Timeout request" di Settings.`
-      : `Host ${parsedEndpoint.host} tidak menjawab HTTP sama sekali (${probe.reason}). ` +
-        `Cek port dan path Base URL, pastikan server memang melayani HTTP di port itu.`;
-    return { ok: false, code: "timeout", error: `Timeout ${elapsedSec} detik. ${verdict}` };
+      ? `Server at ${parsedEndpoint.origin} is reachable (HTTP ${probe.status}), but ` +
+        `/chat/completions did not finish within ${elapsedSec}s. ` +
+        `Try increasing "Request Timeout" in Settings for slower reasoning models.`
+      : `Host ${parsedEndpoint.host} did not respond over HTTP (${probe.reason}). ` +
+        `Check the Base URL, port, and server status.`;
+    return { ok: false, code: "timeout", error: `Timed out after ${elapsedSec}s. ${verdict}` };
   }
 
   if (
@@ -920,11 +923,11 @@ async function runCompletion({ endpoint, parsedEndpoint, originPattern, apiKey, 
       ok: false,
       code: "failed_to_fetch",
       error:
-        `Tidak bisa menghubungi ${parsedEndpoint.host}. Kemungkinan: ` +
-        `(1) izin host belum diberikan → Settings → "Beri Izin Host", ` +
-        `(2) Base URL / port salah, ` +
-        `(3) server menolak koneksi, ` +
-        `(4) coba https:// kalau Base URL pakai http://. [detail: ${err.message}]`,
+        `Could not reach ${parsedEndpoint.host}. Possible causes: ` +
+        `(1) missing host permission → Settings → "Allow Host Access", ` +
+        `(2) wrong Base URL or port, ` +
+        `(3) server refused connection, ` +
+        `(4) try https:// if Base URL uses http://. [detail: ${err.message}]`,
     };
   }
 
@@ -978,7 +981,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
   if (!apiKey || !String(apiKey).trim()) {
-    sendResponse({ ok: false, code: "no_key", error: "API key kosong. Isi di Settings." });
+    sendResponse({ ok: false, code: "no_key", error: "API key is empty. Please set it in Settings." });
     return true;
   }
 
@@ -1007,7 +1010,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
-  // ── Non-blocking Translation Preview untuk balasan bahasa asing (ZH/JA/KO/AR/RU/ES/dll.) ──
+  // Non-blocking English Translation Preview for non-English replies (ZH, JA, KO, ID, AR, RU, ES, etc.)
   if (action === "translatePreview") {
     runCompletion({
       endpoint,
@@ -1021,11 +1024,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           {
             role: "system",
             content:
-              "Translate the given short X reply into natural, concise Indonesian so the user knows its exact meaning before posting. Output ONLY the Indonesian translation in 1 short line, no quotes, no explanation.",
+              "Translate the given short X reply into natural, concise English so the user knows its exact meaning before posting. Output ONLY the English translation in 1 short line, no quotes, no explanation.",
           },
           {
             role: "user",
-            content: `Source language (${sourceLang || "foreign"}): ${String(replyText || "").slice(0, 280)}\nArti dalam Bahasa Indonesia:`,
+            content: `Source language (${sourceLang || "non-English"}): ${String(replyText || "").slice(0, 280)}\nEnglish meaning:`,
           },
         ],
         max_tokens: 256,
@@ -1103,7 +1106,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       },
     });
 
-    // Fallback otomatis ke teks murni jika model belum mendukung input Vision (HTTP 400 / 415 / 422)
+    // Automatic plain-text fallback if the configured model does not support Vision inputs (HTTP 400 / 415 / 422)
     if (
       usedVisionPayload &&
       firstRes &&
@@ -1135,7 +1138,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     const firstCandidate = extractReplyContentFromData(firstRes.data);
 
-    // Auto-Rewrite Guard jika model masih membalas dengan bahasa yang salah
+    // Automatic Self-Correction Guard if the model still replied in the wrong language
     if (firstCandidate && !isReplyInExpectedLanguage(firstCandidate, lang)) {
       const rewriteRes = await runCompletion({
         endpoint,
