@@ -66,9 +66,6 @@
       from { opacity: 0; transform: translateY(10px); }
       to { opacity: 1; transform: translateY(0); }
     }
-    @keyframes spin {
-      to { transform: rotate(360deg); }
-    }
     @keyframes pulseDot {
       0%, 100% { opacity: 1; transform: scale(1); }
       50% { opacity: 0.55; transform: scale(0.88); }
@@ -87,7 +84,7 @@
     }
 
     .shell {
-      max-width: 600px;
+      max-width: 620px;
       margin: 0 auto;
       display: flex;
       flex-direction: column;
@@ -195,9 +192,6 @@
       box-shadow: var(--shadow-md);
       animation: fadeSlideUp 0.34s cubic-bezier(0.22, 1, 0.36, 1) both;
     }
-    .panel:nth-of-type(2) { animation-delay: 0.04s; }
-    .panel:nth-of-type(3) { animation-delay: 0.08s; }
-    .panel:nth-of-type(4) { animation-delay: 0.12s; }
 
     .section-head {
       display: flex;
@@ -217,6 +211,106 @@
       color: var(--muted);
       margin: -8px 0 16px;
       line-height: 1.5;
+    }
+
+    /* ── Multi-Profile Switcher Bar ────────────────────────── */
+    .profile-bar {
+      background: var(--surface-subtle);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 12px;
+      margin-bottom: 18px;
+    }
+    .profile-tabs-row {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 10px;
+    }
+    .profile-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      flex: 1;
+    }
+    .profile-tab {
+      appearance: none;
+      border: 1px solid var(--line-strong);
+      background: var(--surface);
+      color: var(--muted);
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 650;
+      padding: 5px 12px;
+      border-radius: 999px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .profile-tab:hover {
+      border-color: var(--blue);
+      color: var(--fg);
+    }
+    .profile-tab[data-active="true"] {
+      background: linear-gradient(135deg, #1d9bf0 0%, #4f46e5 100%);
+      border-color: transparent;
+      color: #ffffff;
+      box-shadow: 0 2px 8px rgba(29, 155, 240, 0.28);
+    }
+
+    .profile-add-btn {
+      appearance: none;
+      border: 1px dashed var(--line-strong);
+      background: transparent;
+      color: var(--blue);
+      font-family: inherit;
+      font-size: 11.5px;
+      font-weight: 700;
+      padding: 5px 11px;
+      border-radius: 999px;
+      cursor: pointer;
+      transition: background 0.15s ease, border-color 0.15s ease;
+    }
+    .profile-add-btn:hover:not(:disabled) {
+      background: rgba(29, 155, 240, 0.1);
+      border-color: var(--blue);
+    }
+    .profile-add-btn:disabled {
+      opacity: 0.45;
+      cursor: default;
+    }
+
+    .profile-meta-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .profile-meta-row input[type="text"] {
+      flex: 1;
+      padding: 7px 11px;
+      font-size: 12.5px;
+      background: var(--surface);
+    }
+    .btn-danger-ghost {
+      appearance: none;
+      border: 1px solid var(--red-border);
+      background: var(--red-bg);
+      color: var(--red);
+      font-family: inherit;
+      font-size: 11.5px;
+      font-weight: 650;
+      height: 33px;
+      padding: 0 11px;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: filter 0.15s ease, opacity 0.15s ease;
+    }
+    .btn-danger-ghost:hover:not(:disabled) {
+      filter: brightness(1.06);
+    }
+    .btn-danger-ghost:disabled {
+      opacity: 0.38;
+      cursor: default;
     }
 
     /* ── Chips / Presets ───────────────────────────────────── */
@@ -344,7 +438,7 @@
 
     textarea {
       resize: vertical;
-      min-height: 86px;
+      min-height: 84px;
       line-height: 1.55;
     }
 
@@ -382,7 +476,6 @@
       .hero { flex-direction: column; align-items: flex-start; }
     }
 
-    /* ── Timeout Slider + Number Sync ──────────────────────── */
     .timeout-control {
       display: flex;
       align-items: center;
@@ -424,6 +517,84 @@
       background: rgba(29, 155, 240, 0.1);
     }
 
+    /* ── Smart Feature Toggle Rows ─────────────────────────── */
+    .toggle-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .toggle-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 12px 14px;
+      border-radius: 14px;
+      background: var(--surface-subtle);
+      border: 1px solid var(--line);
+    }
+    .toggle-info strong {
+      display: block;
+      font-size: 13px;
+      font-weight: 650;
+      margin-bottom: 2px;
+    }
+    .toggle-info span {
+      display: block;
+      font-size: 11.5px;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+    .kbd {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 11px;
+      font-weight: 650;
+      padding: 1px 6px;
+      border-radius: 5px;
+      background: var(--surface);
+      border: 1px solid var(--line-strong);
+    }
+
+    .switch {
+      position: relative;
+      width: 42px;
+      height: 24px;
+      flex-shrink: 0;
+      display: inline-block;
+    }
+    .switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+    .slider {
+      position: absolute;
+      inset: 0;
+      cursor: pointer;
+      background: var(--line-strong);
+      border-radius: 999px;
+      transition: background 0.18s ease;
+    }
+    .slider::before {
+      content: "";
+      position: absolute;
+      width: 18px;
+      height: 18px;
+      left: 3px;
+      top: 3px;
+      border-radius: 50%;
+      background: #ffffff;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.22);
+      transition: transform 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+    .switch input:checked + .slider {
+      background: var(--blue);
+    }
+    .switch input:checked + .slider::before {
+      transform: translateX(18px);
+    }
+
     /* ── Buttons ───────────────────────────────────────────── */
     .btn {
       display: inline-flex;
@@ -456,9 +627,6 @@
       width: 15px;
       height: 15px;
       flex-shrink: 0;
-    }
-    .btn .spin {
-      animation: spin 0.75s linear infinite;
     }
 
     .btn-primary {
@@ -591,47 +759,6 @@
       border-color: var(--amber-border);
     }
 
-    /* ── How-to Steps ──────────────────────────────────────── */
-    .steps {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 10px;
-      margin-top: 4px;
-    }
-    @media (max-width: 540px) {
-      .steps { grid-template-columns: 1fr; }
-    }
-    .step {
-      padding: 13px;
-      border-radius: 14px;
-      background: var(--surface-subtle);
-      border: 1px solid var(--line);
-    }
-    .step-num {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      width: 22px;
-      height: 22px;
-      border-radius: 7px;
-      font-size: 11.5px;
-      font-weight: 750;
-      color: var(--blue);
-      background: rgba(29, 155, 240, 0.14);
-      margin-bottom: 8px;
-    }
-    .step-title {
-      font-size: 12.5px;
-      font-weight: 700;
-      margin: 0 0 4px;
-    }
-    .step-text {
-      font-size: 11.5px;
-      color: var(--muted);
-      line-height: 1.48;
-      margin: 0;
-    }
-
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after {
         animation: none !important;
@@ -649,9 +776,9 @@
         <div>
           <div class="brand-title-row">
             <h1>X AI Reply</h1>
-            <span class="version-tag">v4.1</span>
+            <span class="version-tag">v5.0</span>
           </div>
-          <p class="brand-sub">Balasan satu kalimat natural &amp; anti-halu langsung di kotak reply X.</p>
+          <p class="brand-sub">Multilingual, Vision, Quick Angles &amp; Multi-Profile AI Reply Engine.</p>
         </div>
       </div>
       <div id="readinessBadge" class="status-pill" data-tone="warn">
@@ -660,12 +787,23 @@
       </div>
     </header>
 
-    <!-- API & Model Settings -->
+    <!-- Multi-Profile + API & Model Settings -->
     <section class="panel">
       <div class="section-head">
-        <h2 class="section-title">Koneksi Provider &amp; Model</h2>
+        <h2 class="section-title">Profil API &amp; Model</h2>
       </div>
-      <p class="section-desc">Pilih preset populer atau masukkan endpoint OpenAI-compatible milikmu sendiri.</p>
+      <p class="section-desc">Simpan hingga 6 profil API berbeda (mis. Groq cepat &amp; Grok/Claude riset) dan ganti instan dari Popup.</p>
+
+      <div class="profile-bar">
+        <div class="profile-tabs-row">
+          <div id="profileTabs" class="profile-tabs"></div>
+          <button type="button" id="addProfile" class="profile-add-btn">+ Profil Baru</button>
+        </div>
+        <div class="profile-meta-row">
+          <input type="text" id="profileName" placeholder="Nama profil (mis. Grok Utama)" maxlength="28">
+          <button type="button" id="deleteProfile" class="btn-danger-ghost">Hapus</button>
+        </div>
+      </div>
 
       <div class="chip-row" role="group" aria-label="Preset Provider">
         <button type="button" class="chip provider-chip" data-url="https://api.x.ai/v1" data-model-hint="grok-4.6-high">xAI Grok</button>
@@ -724,13 +862,56 @@
       </div>
     </section>
 
+    <!-- Smart Power Features -->
+    <section class="panel">
+      <div class="section-head">
+        <h2 class="section-title">Fitur Pintar &amp; Pintasan</h2>
+        <button type="button" id="clearMemory" class="link-btn">Reset Memori Variasi</button>
+      </div>
+      <div class="toggle-list">
+        <div class="toggle-item">
+          <div class="toggle-info">
+            <strong>Vision Mode (Baca Gambar, Chart &amp; Screenshot)</strong>
+            <span>Kirim gambar tweet ke model multimodal. Otomatis fallback ke teks murni jika model belum mendukung Vision.</span>
+          </div>
+          <label class="switch" aria-label="Vision Mode">
+            <input type="checkbox" id="visionMode" checked>
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div class="toggle-item">
+          <div class="toggle-info">
+            <strong>Translation Preview (Arti Balasan Bahasa Asing)</strong>
+            <span>Saat membalas post Mandarin, Jepang, Korea, Arab, dll., tampilkan toast arti Bahasa Indonesia-nya agar aman dicek sebelum kirim.</span>
+          </div>
+          <label class="switch" aria-label="Translation Preview">
+            <input type="checkbox" id="translationPreview" checked>
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div class="toggle-item">
+          <div class="toggle-info">
+            <strong>Pintasan Keyboard <span class="kbd">Alt</span> + <span class="kbd">R</span></strong>
+            <span>Tekan <code>Alt + R</code> langsung di kotak balasan atau modal X untuk memicu AI Reply tanpa klik mouse.</span>
+          </div>
+          <label class="switch" aria-label="Shortcut Alt+R">
+            <input type="checkbox" id="shortcutEnabled" checked>
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+      <div id="memoryStatus" class="hint" style="margin-top:8px;">Memori Anti-Repetisi aktif otomatis (menyimpan 8 balasan terakhir secara lokal agar gaya kalimat tidak monoton).</div>
+    </section>
+
     <!-- Persona & Tone Prompt -->
     <section class="panel">
       <div class="section-head">
         <h2 class="section-title">Gaya Bahasa &amp; Tone Balasan</h2>
         <button type="button" id="resetPrompt" class="link-btn">Reset Default</button>
       </div>
-      <p class="section-desc">Bahasa balasan otomatis mengikuti bahasa post target (Indonesia, Inggris, Mandarin/China, Jepang, Korea, Arab, Rusia, Spanyol, dll.). Atur karakter &amp; vibe di bawah ini.</p>
+      <p class="section-desc">Bahasa balasan otomatis mengikuti bahasa post target (Indonesia, Inggris, Mandarin/China, Jepang, Korea, Arab, Rusia, Spanyol, dll.). Hover tombol <strong>AI Reply</strong> di X untuk memilih sudut cepat (<em>Agree / Ask / Counter / Witty</em>).</p>
 
       <div class="chip-row" role="group" aria-label="Preset Gaya">
         <button type="button" class="chip tone-chip" data-tone="all lowercase, under 10 words, dry and effortless, sound like a real person typing from phone, no emojis">Santai &amp; Dry (Default)</button>
@@ -780,30 +961,6 @@
             <button type="button" id="test" class="btn btn-soft">Tes Koneksi API</button>
             <div id="testStatus" class="result-box"></div>
           </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- Cara Pakai -->
-    <section class="panel">
-      <div class="section-head">
-        <h2 class="section-title">Cara Kerja di X</h2>
-      </div>
-      <div class="steps">
-        <div class="step">
-          <div class="step-num">1</div>
-          <p class="step-title">Buka Kotak Reply</p>
-          <p class="step-text">Klik Reply atau Quote pada tweet mana pun di X / Twitter.</p>
-        </div>
-        <div class="step">
-          <div class="step-num">2</div>
-          <p class="step-title">Klik ✨ AI Reply</p>
-          <p class="step-text">Ekstensi membaca teks, quote, kartu berita, &amp; ticker secara presisi.</p>
-        </div>
-        <div class="step">
-          <div class="step-num">3</div>
-          <p class="step-title">Edit atau Kirim</p>
-          <p class="step-text">Balasan masuk ke editor X dan tetap bebas diedit sebelum dikirim.</p>
         </div>
       </div>
     </section>

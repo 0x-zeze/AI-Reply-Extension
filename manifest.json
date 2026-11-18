@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "X AI Reply",
-  "version": "4.1",
-  "description": "Tombol AI Reply di kotak balasan X. Custom base URL, API key, dan model.",
+  "version": "5.0",
+  "description": "Context-locked multilingual AI Reply for X with Vision, Quick Angles, Multi-Profile & Translation Preview.",
   "permissions": ["storage"],
   "options_page": "options.html",
   "background": {

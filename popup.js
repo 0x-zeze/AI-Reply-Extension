@@ -5,9 +5,16 @@ const DEFAULTS = {
   prompt:
     "all lowercase, under 10 words, dry and effortless, sound like a real person typing from phone, no emojis",
   timeout: 60,
+  visionMode: true,
+  translationPreview: true,
+  shortcutEnabled: true,
+  profiles: null,
+  activeProfileId: "",
 };
 
 let currentConfig = { ...DEFAULTS };
+let profilesList = [];
+let activeProfileId = "";
 let toneHintTimer = null;
 
 function $(id) {
@@ -66,6 +73,75 @@ function syncTonePills(promptValue) {
   });
 }
 
+function syncFeatureButtons() {
+  $("toggleVision").dataset.on = currentConfig.visionMode !== false ? "true" : "false";
+  $("toggleTranslate").dataset.on =
+    currentConfig.translationPreview !== false ? "true" : "false";
+  $("toggleShortcut").dataset.on =
+    currentConfig.shortcutEnabled !== false ? "true" : "false";
+}
+
+function renderProfileStrip() {
+  const strip = $("popupProfiles");
+  if (!strip) return;
+  strip.innerHTML = "";
+
+  if (!Array.isArray(profilesList) || profilesList.length <= 1) {
+    strip.style.display = "none";
+    return;
+  }
+
+  strip.style.display = "flex";
+  profilesList.forEach((prof) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "prof-pill";
+    btn.textContent = prof.name || "Profil";
+    btn.dataset.active = prof.id === activeProfileId ? "true" : "false";
+    btn.addEventListener("click", () => {
+      if (prof.id === activeProfileId) return;
+      activatePopupProfile(prof);
+    });
+    strip.appendChild(btn);
+  });
+}
+
+function activatePopupProfile(prof) {
+  activeProfileId = prof.id;
+  currentConfig.baseUrl = prof.baseUrl || DEFAULTS.baseUrl;
+  currentConfig.apiKey = prof.apiKey || "";
+  currentConfig.model = prof.model || DEFAULTS.model;
+  currentConfig.prompt = prof.prompt !== undefined ? prof.prompt : DEFAULTS.prompt;
+  currentConfig.timeout = Number(prof.timeout) > 0 ? Number(prof.timeout) : DEFAULTS.timeout;
+
+  const parsed = parseBaseOrigin(currentConfig.baseUrl);
+  if (parsed && chrome.permissions && chrome.permissions.request) {
+    try {
+      chrome.permissions.request({ origins: [parsed.pattern] }, () => {
+        void chrome.runtime.lastError;
+        renderState();
+      });
+    } catch (e) {}
+  }
+
+  chrome.storage.sync.set(
+    {
+      baseUrl: currentConfig.baseUrl,
+      apiKey: currentConfig.apiKey,
+      model: currentConfig.model,
+      prompt: currentConfig.prompt,
+      timeout: currentConfig.timeout,
+      activeProfileId: prof.id,
+    },
+    () => {
+      void chrome.runtime.lastError;
+      renderProfileStrip();
+      renderState();
+      setFeedback(`✓ Beralih ke profil "${prof.name}"`, "ok");
+    }
+  );
+}
+
 function renderState() {
   const base = (currentConfig.baseUrl || DEFAULTS.baseUrl).trim();
   const parsed = parseBaseOrigin(base);
@@ -83,6 +159,7 @@ function renderState() {
   }
 
   syncTonePills(currentConfig.prompt);
+  syncFeatureButtons();
 
   const badge = $("statusBadge");
   const statusText = $("statusText");
@@ -132,8 +209,32 @@ function loadPopupData() {
       model: data.model || DEFAULTS.model,
       prompt: data.prompt !== undefined ? data.prompt : DEFAULTS.prompt,
       timeout: Number(data.timeout) > 0 ? Number(data.timeout) : DEFAULTS.timeout,
+      visionMode: data.visionMode !== false,
+      translationPreview: data.translationPreview !== false,
+      shortcutEnabled: data.shortcutEnabled !== false,
     };
+
+    if (Array.isArray(data.profiles) && data.profiles.length > 0) {
+      profilesList = data.profiles;
+      activeProfileId =
+        profilesList.some((p) => p.id === data.activeProfileId)
+          ? data.activeProfileId
+          : profilesList[0].id;
+    } else {
+      profilesList = [];
+      activeProfileId = "";
+    }
+
+    renderProfileStrip();
     renderState();
+  });
+}
+
+function toggleBooleanFlag(key) {
+  currentConfig[key] = !currentConfig[key];
+  syncFeatureButtons();
+  chrome.storage.sync.set({ [key]: currentConfig[key] }, () => {
+    void chrome.runtime.lastError;
   });
 }
 
@@ -147,6 +248,14 @@ document.addEventListener("DOMContentLoaded", () => {
       window.open(`chrome-extension://${chrome.runtime.id}/options.html`);
     }
   });
+
+  $("toggleVision").addEventListener("click", () => toggleBooleanFlag("visionMode"));
+  $("toggleTranslate").addEventListener("click", () =>
+    toggleBooleanFlag("translationPreview")
+  );
+  $("toggleShortcut").addEventListener("click", () =>
+    toggleBooleanFlag("shortcutEnabled")
+  );
 
   $("quickGrant").addEventListener("click", () => {
     const parsed = parseBaseOrigin(currentConfig.baseUrl);
@@ -168,7 +277,17 @@ document.addEventListener("DOMContentLoaded", () => {
       const nextTone = btn.dataset.tone;
       currentConfig.prompt = nextTone;
       syncTonePills(nextTone);
-      chrome.storage.sync.set({ prompt: nextTone }, () => {
+
+      const patch = { prompt: nextTone };
+      if (Array.isArray(profilesList) && profilesList.length > 0) {
+        const curProf = profilesList.find((p) => p.id === activeProfileId);
+        if (curProf) {
+          curProf.prompt = nextTone;
+          patch.profiles = profilesList;
+        }
+      }
+
+      chrome.storage.sync.set(patch, () => {
         if (chrome.runtime.lastError) return;
         const hint = $("toneSavedHint");
         hint.dataset.show = "true";

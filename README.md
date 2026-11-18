@@ -1,11 +1,12 @@
 <div align="center">
   <img src="icons/icon128.png" alt="X AI Reply Logo" width="84" height="84" />
   <h1>X AI Reply Extension</h1>
-  <p><strong>Context-locked, multilingual, zero-lag AI reply assistant for X (Twitter) — powered by your own OpenAI-compatible API.</strong></p>
+  <p><strong>Context-locked, vision-enabled, multilingual, zero-lag AI reply assistant for X (Twitter) — powered by your own OpenAI-compatible API.</strong></p>
 
   <p>
     <img src="https://img.shields.io/badge/Manifest-V3-1d9bf0?style=flat-square" alt="Manifest V3" />
-    <img src="https://img.shields.io/badge/Version-4.1-4f46e5?style=flat-square" alt="Version 4.1" />
+    <img src="https://img.shields.io/badge/Version-5.0-4f46e5?style=flat-square" alt="Version 5.0" />
+    <img src="https://img.shields.io/badge/Vision-Multimodal_Ready-059669?style=flat-square" alt="Vision Ready" />
     <img src="https://img.shields.io/badge/UI-Auto_Dark%2FLight_60fps-10b981?style=flat-square" alt="60fps UI" />
     <img src="https://img.shields.io/badge/API-OpenAI_Compatible-7c3aed?style=flat-square" alt="OpenAI Compatible" />
   </p>
@@ -15,46 +16,41 @@
 
 ## Overview
 
-**X AI Reply** injects a lightweight, GPU-accelerated **AI Reply** button directly inside X (`x.com` / `twitter.com` / `pro.x.com`) reply and quote composers. With a single click, it extracts the rich context surrounding the target post, detects the post's exact language and intent, and inserts a concise, natural, human-sounding one-liner into X's Draft.js editor — ready for you to review, tweak, or send.
-
-Built from the ground up with **strict anti-hallucination grounding**, **native multilingual matching**, and **zero-jank DOM performance**, it avoids generic bot clichés while giving you complete control over your API provider, model, timeout, and persona.
+**X AI Reply** injects a lightweight, GPU-accelerated **AI Reply** pill (plus a slide-out **Quick Angle Bar** and `Alt + R` shortcut) directly inside X (`x.com` / `twitter.com` / `pro.x.com`) reply and quote composers. With a single click or keystroke, it inspects the full conversation and visual context around the target post, locks onto the post's native language and intent, and inserts a sharp, natural, human-sounding one-liner into X's Draft.js editor — ready for you to review, edit, or send.
 
 ---
 
 ## Key Features
 
-### 1. Deep Multi-Layer Post Context Extraction
-Unlike basic scrapers that only read a single line of text, X AI Reply inspects the full conversation structure around the reply box:
+### 1. Multimodal Vision Mode (Charts, Screenshots & Infographics)
+- Automatically extracts attached tweet media (`pbs.twimg.com/media/...` normalized to crisp medium resolution) and sends them via OpenAI-compatible `image_url` payloads so multimodal models (**Grok**, **GPT-4o**, **Claude**, **Gemini**, **Qwen-VL**) can read candlestick charts, PnL screenshots, tables, and memes even when no `alt` text is provided.
+- **Automatic Text-Only Fallback**: If your configured model is text-only and returns HTTP `400` / `415` / `422` on image inputs, the service worker transparently retries with plain text so requests never break.
+
+### 2. Deep Multi-Layer Post Context Extraction
 - **Target Post Content**: Preserves exact spacing across inline links, `@mentions`, `$cashtags`, `#hashtags`, and emoji `alt` attributes.
-- **Thread & Parent History**: Automatically reads up to 2 preceding posts in a thread or reply modal so comments on follow-up tweets retain full background context.
-- **Quoted Posts**: Separately extracts embedded Quote Tweets (author + content) and bridges the quoting author's commentary with the quoted source.
-- **Polls & X Longform Articles**: Reads poll choices (`cardPoll`) and native X Article titles & bodies (`twitterArticleRichTextView`).
-- **Link Preview Cards & Chart Descriptions**: Captures news/article preview cards and meaningful image/chart `alt` descriptions while filtering out profile avatars and decorative icons.
+- **Thread & Parent History**: Reads up to 2 preceding posts in a thread or reply modal so comments on follow-up tweets retain full background context.
+- **Quoted Posts, Polls & X Longform Articles**: Separately extracts embedded Quote Tweets (author + body), poll options (`cardPoll`), link preview cards, and X Longform Articles (`twitterArticleRichTextView`).
 
-### 2. Intent Classification & Anti-Hallucination Grounding
-- **Intent-Aware Reactions**: Automatically detects whether the target post is a **Question**, **Poll**, **Data/Chart Milestone** (`TVL`, `%`, `ATH`, metrics), **Product Launch / Ecosystem Integration**, or **Quote Take**, steering the reply to answer questions directly or react to concrete specifics.
-- **Smart Author & Entity Anchoring**: Distinguishes between the post's author, `$tickers` (e.g., `$BTC`, `$SOL`, `$INJ`), and mentioned ecosystems — weaving in natural project names instead of robotic `@handle` spam.
-- **Anti-AI Slop Filter**: Strictly enforces concise, casual one-liners and blocks recognizable LLM filler phrases (*"totally agree"*, *"spot on"*, *"game changer"*, *"worth watching"*, *"quietly building"*, *"isn't just X, it's Y"*).
+### 3. Hover Quick-Angle Mini-Menu & `Alt + R` Keyboard Shortcut
+- **1-Click Reaction Angles**: Hover over the **✨ AI Reply** button inside any X reply box to slide out quick angle pills:
+  - **👍 Agree** — Co-sign the author's point with one concrete reason.
+  - **🤔 Ask** — Ask a sharp, curious follow-up question.
+  - **⚡ Counter** — Offer a calm, smart skeptical nuance or caveat.
+  - **😎 Witty** — Drop a deadpan, effortless observation.
+- **Keyboard Shortcut (`Alt + R`)**: Trigger or regenerate an AI reply directly from the keyboard without touching your mouse.
 
-### 3. Automatic Multilingual & CJK Native Engine
-Replies automatically match the **exact language, script, and internet register** of the target post by combining Unicode script/lexical analysis with X's native DOM `lang` attribute:
-- **East Asian (CJK)**:
-  - **Simplified Chinese (`zh-CN` / 简体中文)** & **Traditional Chinese (`zh-TW` / 繁體中文)** — accurately distinguished even when mixed with English protocol/project names, with native `8–26` character phrasing.
-  - **Japanese (`ja` / 日本語)** — supports Hiragana, Katakana, and pure-Kanji posts (`12–38` character casual X phrasing).
-  - **Korean (`ko` / 한국어)** — supports Hangul and Korean Jamo slang (`ㅋㅋㅋ`, `ㅠㅠ`) with natural community phrasing.
-- **Southeast Asian, European & Middle Eastern**:
-  - Native support for **English**, **Indonesian** (including casual slang), **Vietnamese**, **Thai**, **Hindi**, **Arabic**, **Russian**, **Ukrainian**, **Spanish**, **Portuguese**, **French**, **German**, **Turkish**, and more.
-- **Target-First Priority**: If a user writes a comment in Indonesian, Chinese, Japanese, or Korean while quoting a long English news post, the reply stays locked to the language of the post you are replying to.
+### 4. Guaranteed Multilingual Engine + Live Translation Preview
+- **Native Language Lock & Self-Correction Guard**: Detects and replies in the exact language and script of the target post — including **English**, **Indonesian**, **Simplified Chinese (简体中文)**, **Traditional Chinese (繁體中文)**, **Japanese (日本語)**, **Korean (한국어)**, **Arabic**, **Russian**, **Ukrainian**, **Thai**, **Hindi**, **Vietnamese**, **Spanish**, **Portuguese**, **French**, **German**, **Turkish**, and more.
+- **Works Even on Translated X Posts**: Even if you clicked *"Translate post"* on X to read a foreign tweet first, the extension detects X's *"Translated from..."* banner and replies in the author's original language.
+- **Live Translation Preview Toast**: Whenever a reply is generated in a foreign script/language (such as Chinese, Japanese, Korean, Arabic, or Russian), a non-blocking toast displays its concise meaning so you can verify what your reply says before posting.
 
-### 4. Bring Your Own API (100% OpenAI-Compatible)
-- Connect **xAI (Grok)**, **OpenAI**, **Groq**, **OpenRouter**, **DeepSeek**, **Ollama**, or any self-hosted OpenAI-compatible proxy (`https://your-custom-endpoint.example.com/v1`).
-- **Reasoning Model Ready**: Automatically strips `<think>...</think>` / `<thinking>...</thinking>` blocks and allocates reasoning token headroom so thinking models (such as Grok reasoning, DeepSeek R1, Qwen QwQ) output clean final replies.
-- **Built-in Diagnostics**: Includes host-permission verification, origin reachability probing on timeouts, automatic transient connection retry, and real-time latency measurement (`ms`).
+### 5. Anti-Repetition Memory & Zero-Hallucination Grounding
+- **Local Reply Variety Memory**: Stores your last 8 generated replies locally (`chrome.storage.local`) and instructs the model to vary sentence skeletons, openings, and cadence across consecutive replies.
+- **Anti-AI Slop Filter**: Blocks recognizable LLM filler phrases (*"totally agree"*, *"spot on"*, *"game changer"*, *"worth watching"*, *"quietly building"*, *"isn't just X, it's Y"*).
 
-### 5. Smooth 60/120fps UI & Ghost-Free Draft.js Insertion
-- **Zero-Lag In-Page Button**: GPU-composited CSS (`transform` & `opacity` only, `contain: layout paint`), `0%` CPU overhead while typing in X's editor, and zero forced layout reflows (`getBoundingClientRect`) during timeline scrolling.
-- **No Double-Text Bug**: Uses async focus synchronization + synthetic `ClipboardEvent("paste")` so X's Draft.js `EditorState` renders cleanly once — preserving native `@mention` / `$cashtag` highlighting, character counter accuracy, and normal *Backspace* editing.
-- **Modern Toolbar Popup & Settings Dashboard**: Automatic system **Light / Dark Mode**, 1-click provider presets, quick tone switcher pills, API key visibility toggle, and non-blocking in-page toast notifications.
+### 6. Multi-Profile API Switcher & Smooth 60/120fps UI
+- **Up to 6 Saved API Profiles**: Save multiple provider/model configurations (for example, an ultra-fast **Groq** profile for quick banter and a **Grok / Claude / OpenRouter** profile for deep chart & thread analysis) and switch between them in 1 click right from the **Toolbar Popup**.
+- **Ghost-Free Draft.js Paste & Zero-Lag Observer**: 100% GPU-composited animations (`transform` & `opacity`), `0%` CPU overhead while typing, zero forced layout reflows during timeline scroll, and synthetic `ClipboardEvent("paste")` insertion that prevents Draft.js double-text bugs.
 
 ---
 
@@ -62,11 +58,10 @@ Replies automatically match the **exact language, script, and internet register*
 
 | Use Case | How X AI Reply Helps |
 | :--- | :--- |
-| **Web3 / Crypto & Tech Analysts** | React to protocol launches, ecosystem integrations, `$ticker` thesis threads, and chart metrics with grounded, non-hallucinated one-liners. |
-| **Cross-Language Global Communities** | Engage naturally with Japanese, Korean, Simplified/Traditional Chinese, Indonesian, Spanish, or English communities in their own native casual X tone. |
-| **Founders, Creators & DevRel** | Reply quickly to community questions, polls, and quote-tweets while keeping full control to edit every message before clicking *Reply*. |
-| **Multi-Tweet Thread Discussions** | Jump into deep thread replies knowing the extension automatically reads earlier parent tweets for full conversation context. |
-| **Custom / Local LLM Power Users** | Route requests through OpenRouter, ultra-fast Groq inference, or private self-hosted/local gateways without vendor lock-in. |
+| **Web3 / Crypto & Market Analysts** | Read attached TVL/price charts via **Vision Mode** and react to `$ticker` threads, launches, and integrations with grounded one-liners. |
+| **Global Cross-Language Engagement** | Reply natively in Mandarin, Japanese, Korean, Arabic, Spanish, Indonesian, or English while verifying exact meaning via **Translation Preview**. |
+| **High-Volume Creators & Founders** | Use **`Alt + R`**, **Quick Angles**, and **Anti-Repetition Memory** to reply across dozens of daily mentions without sounding repetitive or robotic. |
+| **Multi-Model Power Users** | Switch effortlessly between fast inference providers and multimodal reasoning models using **Multi-Profile** tabs in the toolbar popup. |
 
 ---
 
@@ -76,29 +71,30 @@ Replies automatically match the **exact language, script, and internet register*
    ```bash
    git clone https://github.com/0x-zeze/AI-Reply-Extension.git
    ```
-2. Open your Chromium-based browser (**Google Chrome**, **Brave**, **Microsoft Edge**, or **Arc**) and navigate to:
+2. Open **Google Chrome**, **Brave**, **Microsoft Edge**, or **Arc** and go to:
    ```text
    chrome://extensions
    ```
-3. Turn on **Developer mode** (toggle in the top-right corner).
+3. Enable **Developer mode** (top-right toggle).
 4. Click **Load unpacked** and select the `AI-Reply-Extension` folder.
-5. *(Optional)* Pin **X AI Reply** from the browser extensions puzzle menu for quick access to the toolbar popup.
+5. Pin **X AI Reply** in your browser toolbar for instant access to profile switching and quick toggles.
 
 ---
 
 ## Configuration & How to Use
 
-### Step 1 — Configure Your API Provider
-1. Click the **X AI Reply** icon in your browser toolbar and click **Buka Settings** (Open Settings).
-2. Select a **Provider Preset** chip (`xAI Grok`, `OpenAI`, `Groq`, `OpenRouter`, `DeepSeek`) or enter your custom OpenAI-compatible **Base URL**:
+### 1. Set Up Your API Profile(s)
+1. Click the **X AI Reply** toolbar icon → **Buka Settings** (Open Settings).
+2. Choose a provider preset or enter any OpenAI-compatible **Base URL**, **API Key**, and **Model**:
    ```text
-   Base URL : https://api.x.ai/v1
-   API Key  : xxx
-   Model    : grok-4.6-high
-   Timeout  : 60
+   Profile Name : Main Profile
+   Base URL     : https://api.x.ai/v1
+   API Key      : xxx
+   Model        : grok-4.6-high
+   Timeout      : 60
    ```
-3. *(Custom Domains)* If using a provider other than `api.x.ai`, click **Simpan Pengaturan** (Save) or **Beri Izin Host** and click **Allow** when Chrome asks for host permission.
-4. Click **Tes Koneksi API** (or **Tes API** inside the toolbar popup) to verify your endpoint, API key (`xxx`), model, and latency.
+3. *(Optional)* Click **+ Profil Baru** to add extra API profiles (up to 6) for instant switching from the toolbar popup.
+4. Click **Simpan Pengaturan** (Save) and approve the browser host-permission prompt if using a custom domain, then click **Tes Koneksi API** to verify connectivity and latency.
 
 ### Supported Provider Examples
 
@@ -111,17 +107,10 @@ Replies automatically match the **exact language, script, and internet register*
 | **DeepSeek** | `https://api.deepseek.com/v1` | `deepseek-chat` | `xxx` |
 | **Custom / Local Proxy** | `https://your-proxy.example.com/v1` | `your-model-name` | `xxx` |
 
-> **Note:** The extension automatically appends `/chat/completions` to your Base URL if not already present.
-
-### Step 2 — Customize Reply Vibe (Optional)
-- Choose a **Quick Tone Preset** directly from the **Toolbar Popup** or **Settings** (*Casual & Dry*, *Witty & Sharp*, *Crypto / CT Native*, *Critical Discussion*), or write your own custom style instructions.
-- Leave language rules out of the custom prompt — the engine automatically locks onto the target post's language.
-
-### Step 3 — Generate Replies on X
-1. Open **X (`https://x.com`)** and open any **Reply** box, **Thread Reply** modal, or **Quote** composer.
-2. Click the floating **✨ AI Reply** pill in the top-right corner of the reply editor.
-3. Wait for the `Thinking…` indicator to turn into `✓ Done` — the generated reply is inserted directly into X's composer.
-4. Review or edit the text freely, then click X's **Reply** button whenever you're ready. *(The extension never auto-submits posts without your action.)*
+### 2. Generate Replies on X
+- **Default Smart Reply:** Click **✨ AI Reply** (or press **`Alt + R`**) inside any X reply or quote box.
+- **Specific Reaction Angle:** Hover over **✨ AI Reply** and click **👍 Agree**, **🤔 Ask**, **⚡ Counter**, or **😎 Witty**.
+- **Foreign Language Verification:** When replying to Chinese, Japanese, Korean, or other foreign posts, check the purple **Translation Preview** toast at the bottom-right to confirm the meaning of your reply before clicking X's **Reply** button.
 
 ---
 
@@ -129,12 +118,12 @@ Replies automatically match the **exact language, script, and internet register*
 
 ```text
 AI-Reply-Extension/
-├── manifest.json     # Chrome Extension Manifest V3 configuration
-├── background.js     # Service worker: API proxy, multilingual detector, intent & anti-halu engine
-├── content.js        # X DOM context extractor, GPU-smooth button/toast UI, Draft.js paste handler
-├── options.html      # Full Settings Dashboard UI (Auto Light/Dark theme)
-├── options.js        # Settings persistence, host permission manager, API diagnostic runner
-├── popup.html        # Toolbar Popup UI (Live status, quick tone switcher, 1-click ping)
+├── manifest.json     # Chrome Extension Manifest V3 configuration (v5.0)
+├── background.js     # Service worker: API proxy, vision fallback, multilingual & anti-repetition engine
+├── content.js        # X DOM & image extractor, Quick Angle UI, Alt+R shortcut, Draft.js paste handler
+├── options.html      # Full Settings Dashboard UI (Multi-profile, smart toggles, Auto Dark/Light)
+├── options.js        # Profile manager, host permissions, & API diagnostics controller
+├── popup.html        # Toolbar Popup UI (1-click profile switcher, feature toggles, tone pills)
 ├── popup.js          # Toolbar Popup controller
 └── icons/            # Extension icons (16x16, 48x48, 128x128)
 ```
@@ -143,17 +132,9 @@ AI-Reply-Extension/
 
 ## Privacy & Security
 
-- **No Hardcoded Secrets:** No API keys, endpoints, or personal credentials are stored in the source code. Always keep your own API key (`xxx`) private in the extension settings.
-- **Zero Third-Party Telemetry:** Requests go strictly from your browser's MV3 background service worker directly to the Base URL you configure. Tweet context and API keys are never sent anywhere else.
-- **Manual Send Control:** X AI Reply only populates the composer box — you always have final review before posting.
-
----
-
-## Troubleshooting
-
-- **"Izin host belum diberikan" / `Failed to fetch`:** Open **Settings** (or the **Toolbar Popup**), click **Beri Izin Host** / **Izinkan Host**, and click **Allow** in the browser prompt so the service worker can reach your custom API domain.
-- **Extension updated / reloaded:** After clicking **Reload (↻)** in `chrome://extensions`, refresh any already-open X tabs (`F5`) so the updated content script attaches cleanly.
-- **Slow reasoning models timing out:** Increase **Timeout Request** (up to `180` seconds) in Settings when using deep-thinking models or high-latency proxies.
+- **No Hardcoded Secrets:** Zero API keys, tokens, or private endpoints are included in this repository (`xxx` is used strictly as a documentation placeholder).
+- **Direct Local-to-API Architecture:** API keys (`chrome.storage.sync`) and recent reply variety history (`chrome.storage.local`) stay in your browser and communicate exclusively with your configured Base URL.
+- **Human-in-the-Loop:** Replies are only inserted into the X editor — never auto-posted without your explicit click.
 
 ---
 

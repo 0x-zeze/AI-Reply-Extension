@@ -1,3 +1,5 @@
+const MAX_PROFILES = 6;
+
 const DEFAULTS = {
   baseUrl: "https://api.x.ai/v1",
   apiKey: "",
@@ -5,7 +7,15 @@ const DEFAULTS = {
   prompt:
     "all lowercase, under 10 words, dry and effortless, sound like a real person typing from phone, no emojis",
   timeout: 60,
+  visionMode: true,
+  translationPreview: true,
+  shortcutEnabled: true,
+  profiles: null,
+  activeProfileId: "",
 };
+
+let profilesState = [];
+let activeProfileId = "";
 
 function $(id) {
   return document.getElementById(id);
@@ -85,6 +95,187 @@ function showResultBox(el, text, tone) {
   el.textContent = text;
   el.dataset.tone = tone || "ok";
   el.dataset.visible = "true";
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Multi-Profile Helpers & Seamless Migration
+// ═══════════════════════════════════════════════════════════════
+function ensureValidProfiles(data) {
+  const fallbackProfile = {
+    id: "prof_default",
+    name: "Profil Utama",
+    baseUrl: normalizeBaseUrl(data.baseUrl || DEFAULTS.baseUrl),
+    apiKey: String(data.apiKey || "").trim(),
+    model: String(data.model || DEFAULTS.model).trim(),
+    prompt: data.prompt !== undefined ? String(data.prompt) : DEFAULTS.prompt,
+    timeout: clampTimeout(data.timeout),
+  };
+
+  if (!Array.isArray(data.profiles) || data.profiles.length === 0) {
+    return {
+      profiles: [fallbackProfile],
+      activeId: fallbackProfile.id,
+    };
+  }
+
+  const sanitized = data.profiles
+    .filter((p) => p && typeof p === "object")
+    .slice(0, MAX_PROFILES)
+    .map((p, idx) => ({
+      id: String(p.id || `prof_${idx + 1}`),
+      name: String(p.name || `Profil ${idx + 1}`).trim() || `Profil ${idx + 1}`,
+      baseUrl: normalizeBaseUrl(p.baseUrl || DEFAULTS.baseUrl),
+      apiKey: String(p.apiKey || "").trim(),
+      model: String(p.model || DEFAULTS.model).trim(),
+      prompt: p.prompt !== undefined ? String(p.prompt) : DEFAULTS.prompt,
+      timeout: clampTimeout(p.timeout),
+    }));
+
+  if (sanitized.length === 0) {
+    return { profiles: [fallbackProfile], activeId: fallbackProfile.id };
+  }
+
+  const chosenId = sanitized.some((p) => p.id === data.activeProfileId)
+    ? data.activeProfileId
+    : sanitized[0].id;
+
+  return { profiles: sanitized, activeId: chosenId };
+}
+
+function getActiveProfileObj() {
+  return (
+    profilesState.find((p) => p.id === activeProfileId) || profilesState[0] || null
+  );
+}
+
+function commitFormIntoCurrentProfile() {
+  const cur = getActiveProfileObj();
+  if (!cur) return;
+  cur.name = $("profileName").value.trim() || cur.name || "Profil";
+  cur.baseUrl = currentBaseUrl();
+  cur.apiKey = $("apiKey").value.trim();
+  cur.model = $("model").value.trim() || DEFAULTS.model;
+  cur.prompt = $("prompt").value.trim();
+  cur.timeout = clampTimeout($("timeout").value);
+}
+
+function populateFormFromProfile(prof) {
+  if (!prof) return;
+  const t = clampTimeout(prof.timeout);
+  $("profileName").value = prof.name || "Profil";
+  $("baseUrl").value = prof.baseUrl || DEFAULTS.baseUrl;
+  $("apiKey").value = prof.apiKey || "";
+  $("model").value = prof.model || DEFAULTS.model;
+  $("prompt").value = prof.prompt !== undefined ? prof.prompt : DEFAULTS.prompt;
+  $("timeout").value = t;
+  $("timeoutRange").value = t;
+  syncActiveChips();
+  refreshPermissionAndReadiness();
+}
+
+function renderProfileTabs() {
+  const wrap = $("profileTabs");
+  if (!wrap) return;
+  wrap.innerHTML = "";
+
+  profilesState.forEach((prof) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "profile-tab";
+    btn.textContent = prof.name;
+    btn.dataset.active = prof.id === activeProfileId ? "true" : "false";
+    btn.addEventListener("click", () => {
+      if (prof.id === activeProfileId) return;
+      switchProfile(prof.id);
+    });
+    wrap.appendChild(btn);
+  });
+
+  $("addProfile").disabled = profilesState.length >= MAX_PROFILES;
+  $("deleteProfile").disabled = profilesState.length <= 1;
+}
+
+function buildStoragePayloadFromActive() {
+  const active = getActiveProfileObj();
+  return {
+    baseUrl: active.baseUrl,
+    apiKey: active.apiKey,
+    model: active.model,
+    prompt: active.prompt,
+    timeout: active.timeout,
+    visionMode: $("visionMode").checked,
+    translationPreview: $("translationPreview").checked,
+    shortcutEnabled: $("shortcutEnabled").checked,
+    profiles: profilesState,
+    activeProfileId: active.id,
+  };
+}
+
+function switchProfile(targetId) {
+  commitFormIntoCurrentProfile();
+  activeProfileId = targetId;
+  const next = getActiveProfileObj();
+  populateFormFromProfile(next);
+  renderProfileTabs();
+
+  // Minta izin host bila domain baru belum diizinkan (langsung dalam klik user gesture)
+  const pattern = originPatternFor(next.baseUrl);
+  if (pattern && chrome.permissions && chrome.permissions.request) {
+    try {
+      chrome.permissions.request({ origins: [pattern] }, () => {
+        void chrome.runtime.lastError;
+        refreshPermissionAndReadiness();
+      });
+    } catch (e) {}
+  }
+
+  chrome.storage.sync.set(buildStoragePayloadFromActive(), () => {
+    void chrome.runtime.lastError;
+    $("status").textContent = `Profil "${next.name}" diaktifkan`;
+    $("status").style.color = "var(--green)";
+    setTimeout(() => {
+      $("status").textContent = "";
+    }, 1800);
+  });
+}
+
+function addNewProfile() {
+  if (profilesState.length >= MAX_PROFILES) return;
+  commitFormIntoCurrentProfile();
+  const nextNum = profilesState.length + 1;
+  const newProf = {
+    id: "prof_" + Date.now(),
+    name: `Profil ${nextNum}`,
+    baseUrl: DEFAULTS.baseUrl,
+    apiKey: "",
+    model: DEFAULTS.model,
+    prompt: DEFAULTS.prompt,
+    timeout: DEFAULTS.timeout,
+  };
+  profilesState.push(newProf);
+  activeProfileId = newProf.id;
+  populateFormFromProfile(newProf);
+  renderProfileTabs();
+  $("profileName").focus();
+  $("profileName").select();
+}
+
+function deleteCurrentProfile() {
+  if (profilesState.length <= 1) return;
+  profilesState = profilesState.filter((p) => p.id !== activeProfileId);
+  activeProfileId = profilesState[0].id;
+  const next = getActiveProfileObj();
+  populateFormFromProfile(next);
+  renderProfileTabs();
+
+  chrome.storage.sync.set(buildStoragePayloadFromActive(), () => {
+    void chrome.runtime.lastError;
+    $("status").textContent = "Profil dihapus";
+    $("status").style.color = "var(--muted)";
+    setTimeout(() => {
+      $("status").textContent = "";
+    }, 1600);
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -172,39 +363,30 @@ function loadSettings() {
       $("status").style.color = "var(--red)";
       return;
     }
-    const timeoutVal = clampTimeout(data.timeout);
-    $("baseUrl").value = data.baseUrl || DEFAULTS.baseUrl;
-    $("apiKey").value = data.apiKey || "";
-    $("model").value = data.model || DEFAULTS.model;
-    $("prompt").value = data.prompt !== undefined ? data.prompt : DEFAULTS.prompt;
-    $("timeout").value = timeoutVal;
-    $("timeoutRange").value = timeoutVal;
 
-    syncActiveChips();
-    refreshPermissionAndReadiness();
+    $("visionMode").checked = data.visionMode !== false;
+    $("translationPreview").checked = data.translationPreview !== false;
+    $("shortcutEnabled").checked = data.shortcutEnabled !== false;
+
+    const resolved = ensureValidProfiles(data);
+    profilesState = resolved.profiles;
+    activeProfileId = resolved.activeId;
+
+    populateFormFromProfile(getActiveProfileObj());
+    renderProfileTabs();
   });
 }
 
 let saveResetTimer = null;
 
 function saveSettings() {
-  const payload = {
-    baseUrl: currentBaseUrl(),
-    apiKey: $("apiKey").value.trim(),
-    model: $("model").value.trim() || DEFAULTS.model,
-    prompt: $("prompt").value.trim(),
-    timeout: clampTimeout($("timeout").value),
-  };
+  commitFormIntoCurrentProfile();
+  const active = getActiveProfileObj();
+  populateFormFromProfile(active);
+  renderProfileTabs();
 
-  // Sinkronkan input form agar selalu mencerminkan nilai yang disimpan
-  $("baseUrl").value = payload.baseUrl;
-  $("apiKey").value = payload.apiKey;
-  $("model").value = payload.model;
-  $("timeout").value = payload.timeout;
-  $("timeoutRange").value = payload.timeout;
-  syncActiveChips();
+  const payload = buildStoragePayloadFromActive();
 
-  // Manfaatkan klik user gesture untuk langsung meminta izin host jika belum ada
   const pattern = originPatternFor(payload.baseUrl);
   if (pattern && chrome.permissions && chrome.permissions.request) {
     try {
@@ -231,7 +413,7 @@ function saveSettings() {
 
     saveBtn.dataset.saved = "true";
     saveLabel.textContent = "Tersimpan";
-    status.textContent = "Pengaturan berhasil disimpan";
+    status.textContent = `Profil "${active.name}" tersimpan`;
     status.style.color = "var(--green)";
     refreshPermissionAndReadiness();
 
@@ -244,8 +426,21 @@ function saveSettings() {
   });
 }
 
+function saveFeatureTogglesQuick() {
+  chrome.storage.sync.set(
+    {
+      visionMode: $("visionMode").checked,
+      translationPreview: $("translationPreview").checked,
+      shortcutEnabled: $("shortcutEnabled").checked,
+    },
+    () => {
+      void chrome.runtime.lastError;
+    }
+  );
+}
+
 // ═══════════════════════════════════════════════════════════════
-// Explicit Host Permission Button
+// Explicit Host Permission & Connection Test
 // ═══════════════════════════════════════════════════════════════
 function grantHostPermission() {
   const out = $("grantStatus");
@@ -285,9 +480,6 @@ function grantHostPermission() {
   });
 }
 
-// ═══════════════════════════════════════════════════════════════
-// Tes Koneksi API (dengan auto-request permission + timeout guard)
-// ═══════════════════════════════════════════════════════════════
 function testConnection() {
   const out = $("testStatus");
   const btn = $("test");
@@ -399,8 +591,34 @@ document.addEventListener("DOMContentLoaded", () => {
   $("save").addEventListener("click", saveSettings);
   $("grant").addEventListener("click", grantHostPermission);
   $("test").addEventListener("click", testConnection);
+  $("addProfile").addEventListener("click", addNewProfile);
+  $("deleteProfile").addEventListener("click", deleteCurrentProfile);
 
-  // Toggle visibilitas API key
+  $("profileName").addEventListener("input", () => {
+    const cur = getActiveProfileObj();
+    if (cur) {
+      cur.name = $("profileName").value.trim() || "Profil";
+      renderProfileTabs();
+    }
+  });
+
+  $("visionMode").addEventListener("change", saveFeatureTogglesQuick);
+  $("translationPreview").addEventListener("change", saveFeatureTogglesQuick);
+  $("shortcutEnabled").addEventListener("change", saveFeatureTogglesQuick);
+
+  $("clearMemory").addEventListener("click", () => {
+    chrome.runtime.sendMessage({ action: "clearReplyMemory" }, () => {
+      void chrome.runtime.lastError;
+      $("memoryStatus").textContent = "✓ Memori variasi balasan berhasil di-reset.";
+      $("memoryStatus").style.color = "var(--green)";
+      setTimeout(() => {
+        $("memoryStatus").textContent =
+          "Memori Anti-Repetisi aktif otomatis (menyimpan 8 balasan terakhir secara lokal agar gaya kalimat tidak monoton).";
+        $("memoryStatus").style.color = "";
+      }, 2400);
+    });
+  });
+
   $("toggleKey").addEventListener("click", () => {
     const input = $("apiKey");
     const showing = input.type === "text";
@@ -409,7 +627,6 @@ document.addEventListener("DOMContentLoaded", () => {
     $("eyeClosedIcon").style.display = showing ? "none" : "";
   });
 
-  // Sinkronisasi slider & input angka timeout
   $("timeoutRange").addEventListener("input", (e) => {
     $("timeout").value = e.target.value;
   });
@@ -420,7 +637,6 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  // Preset provider
   document.querySelectorAll(".provider-chip").forEach((chip) => {
     chip.addEventListener("click", () => {
       const targetUrl = chip.dataset.url;
@@ -441,7 +657,6 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 
-  // Preset tone prompt
   document.querySelectorAll(".tone-chip").forEach((chip) => {
     chip.addEventListener("click", () => {
       $("prompt").value = chip.dataset.tone;
@@ -449,13 +664,11 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 
-  // Reset prompt default
   $("resetPrompt").addEventListener("click", () => {
     $("prompt").value = DEFAULTS.prompt;
     syncActiveChips();
   });
 
-  // Live refresh status saat mengetik
   let permDebounce = null;
   $("baseUrl").addEventListener("input", () => {
     syncActiveChips();

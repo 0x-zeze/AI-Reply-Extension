@@ -1,7 +1,7 @@
-// X AI Reply - Content Script
-// Menyuntik tombol floating "AI Reply" yang ringan (GPU-composited, zero layout-thrash),
-// ekstraksi konteks multi-layer (Thread, Quote, Card, Poll, Article, Media),
-// serta insert Draft.js bebas double-text via synthetic ClipboardEvent("paste").
+// X AI Reply - Content Script (v5.0)
+// GPU-composited "AI Reply" + Quick Angle Mini-Menu, Alt+R Shortcut,
+// Vision Image Extractor, Multi-Layer Context Engine, Foreign Translation Preview,
+// & Anti-Double-Text Draft.js Paste Handler.
 
 const DEFAULT_BASE_URL = "https://api.x.ai/v1";
 const DEFAULT_MODEL = "grok-4.6-high";
@@ -14,12 +14,15 @@ const settingsCache = {
   model: DEFAULT_MODEL,
   prompt: DEFAULT_PROMPT,
   timeout: 60,
+  visionMode: true,
+  translationPreview: true,
+  shortcutEnabled: true,
 };
 let settingsLoaded = false;
 
-// Rate limiting — minimal 3 detik antar request sukses
+// Rate limiting — minimal 2.5 detik antar request sukses
 let lastRequestTime = 0;
-const MIN_REQUEST_INTERVAL_MS = 3000;
+const MIN_REQUEST_INTERVAL_MS = 2500;
 
 // ═══════════════════════════════════════════════════════════════
 // Tracking & Zero-Lag MutationObserver
@@ -30,7 +33,7 @@ let observerRafId = null;
 let reconnectObserverTimer = null;
 
 const boxButtonMap = new WeakMap();
-const mountedButtons = new Set();
+const mountedGroups = new Set();
 
 function hasRelevantDomMutation(mutations) {
   for (let i = 0; i < mutations.length; i++) {
@@ -39,7 +42,13 @@ function hasRelevantDomMutation(mutations) {
 
     const target = m.target;
     if (target && target.nodeType === Node.ELEMENT_NODE) {
-      if (target.closest?.(".x-ai-reply-button, .x-ai-toast-host")) continue;
+      if (
+        target.closest?.(
+          ".x-ai-reply-group, .x-ai-reply-button, .x-ai-toast-host"
+        )
+      ) {
+        continue;
+      }
 
       const activeEditor = target.closest?.(
         'div[contenteditable="true"][data-testid^="tweetTextarea"]'
@@ -111,11 +120,75 @@ function injectStyles() {
       to { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
     }
 
-    .x-ai-reply-button {
+    .x-ai-reply-group {
       position: absolute;
       top: 4px;
       right: 8px;
-      z-index: 10;
+      z-index: 15;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      pointer-events: none;
+    }
+
+    .x-ai-angle-bar {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      height: 27px;
+      padding: 2px 4px;
+      border-radius: 999px;
+      background: rgba(15, 20, 25, 0.94);
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.32);
+      opacity: 0;
+      transform: translate3d(8px, 0, 0) scale(0.95);
+      pointer-events: none;
+      backface-visibility: hidden;
+      transition:
+        opacity 0.16s cubic-bezier(0.22, 1, 0.36, 1),
+        transform 0.16s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    .x-ai-reply-group:hover .x-ai-angle-bar,
+    .x-ai-reply-group:focus-within .x-ai-angle-bar {
+      opacity: 1;
+      transform: translate3d(0, 0, 0) scale(1);
+      pointer-events: auto;
+    }
+
+    .x-ai-reply-group[data-busy="true"] .x-ai-angle-bar {
+      opacity: 0 !important;
+      pointer-events: none !important;
+    }
+
+    .x-ai-angle-pill {
+      appearance: none;
+      border: none;
+      background: transparent;
+      color: #d6d9db;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+      font-size: 10.5px;
+      font-weight: 650;
+      padding: 3px 7px;
+      border-radius: 999px;
+      cursor: pointer;
+      white-space: nowrap;
+      line-height: 1;
+      transition: background 0.14s ease, color 0.14s ease, transform 0.12s ease;
+    }
+    .x-ai-angle-pill:hover {
+      background: rgba(29, 155, 240, 0.24);
+      color: #ffffff;
+      transform: translate3d(0, -0.5px, 0);
+    }
+    .x-ai-angle-pill:active {
+      transform: scale(0.95);
+    }
+
+    .x-ai-reply-button {
+      position: relative;
+      pointer-events: auto;
       overflow: hidden;
       contain: layout paint;
       display: inline-flex;
@@ -207,7 +280,7 @@ function injectStyles() {
       display: flex;
       flex-direction: column;
       gap: 8px;
-      max-width: min(380px, calc(100vw - 32px));
+      max-width: min(390px, calc(100vw - 32px));
       pointer-events: none;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
     }
@@ -248,6 +321,16 @@ function injectStyles() {
     .x-ai-toast[data-type="error"] .x-ai-toast-dot { background: #f43f5e; color: #f43f5e; }
     .x-ai-toast[data-type="warn"] .x-ai-toast-dot { background: #f59e0b; color: #f59e0b; }
     .x-ai-toast[data-type="success"] .x-ai-toast-dot { background: #10b981; color: #10b981; }
+    .x-ai-toast[data-type="translate"] .x-ai-toast-dot { background: #a78bfa; color: #a78bfa; }
+
+    .x-ai-toast-label {
+      font-size: 10.5px;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      color: #a78bfa;
+      margin-bottom: 2px;
+    }
 
     .x-ai-toast-body {
       flex: 1;
@@ -297,7 +380,7 @@ function injectStyles() {
     }
 
     @media (prefers-reduced-motion: reduce) {
-      .x-ai-reply-button, .x-ai-reply-button::after, .x-ai-toast {
+      .x-ai-reply-button, .x-ai-reply-button::after, .x-ai-angle-bar, .x-ai-toast {
         transition: none !important;
         animation: none !important;
       }
@@ -309,7 +392,13 @@ function injectStyles() {
 
 function showToast(message, options = {}) {
   injectStyles();
-  const { type = "info", duration = 4500, actionLabel = "", onAction = null } = options;
+  const {
+    type = "info",
+    title = "",
+    duration = 4500,
+    actionLabel = "",
+    onAction = null,
+  } = options;
 
   let host = document.querySelector(".x-ai-toast-host");
   if (!host) {
@@ -331,6 +420,14 @@ function showToast(message, options = {}) {
 
   const body = document.createElement("div");
   body.className = "x-ai-toast-body";
+
+  if (title) {
+    const labelNode = document.createElement("div");
+    labelNode.className = "x-ai-toast-label";
+    labelNode.textContent = title;
+    body.appendChild(labelNode);
+  }
+
   const textNode = document.createElement("div");
   textNode.textContent = message;
   body.appendChild(textNode);
@@ -412,13 +509,31 @@ function applyStorageData(data) {
     const t = Number(data.timeout);
     settingsCache.timeout = Number.isFinite(t) && t > 0 ? t : 60;
   }
+  if (data.visionMode !== undefined) {
+    settingsCache.visionMode = data.visionMode !== false;
+  }
+  if (data.translationPreview !== undefined) {
+    settingsCache.translationPreview = data.translationPreview !== false;
+  }
+  if (data.shortcutEnabled !== undefined) {
+    settingsCache.shortcutEnabled = data.shortcutEnabled !== false;
+  }
 }
 
 function loadSettings() {
   return new Promise((resolve) => {
     try {
       chrome.storage.sync.get(
-        ["baseUrl", "apiKey", "model", "prompt", "timeout"],
+        [
+          "baseUrl",
+          "apiKey",
+          "model",
+          "prompt",
+          "timeout",
+          "visionMode",
+          "translationPreview",
+          "shortcutEnabled",
+        ],
         (data) => {
           if (chrome.runtime.lastError) {
             console.warn("[Yap Extension] Storage read error:", chrome.runtime.lastError.message);
@@ -431,6 +546,9 @@ function loadSettings() {
             model: data.model || DEFAULT_MODEL,
             prompt: data.prompt !== undefined ? data.prompt : DEFAULT_PROMPT,
             timeout: data.timeout,
+            visionMode: data.visionMode !== false,
+            translationPreview: data.translationPreview !== false,
+            shortcutEnabled: data.shortcutEnabled !== false,
           });
           settingsLoaded = true;
           resolve(settingsCache);
@@ -462,7 +580,7 @@ function buildEndpoint(baseUrl) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// Deep Post Context Extraction (Thread, Quote, Card, Poll, Article, Media)
+// Deep Post Context + Vision Image URL Extractor
 // ═══════════════════════════════════════════════════════════════
 function cleanText(value) {
   return String(value || "")
@@ -525,7 +643,6 @@ function parseUserBlock(root, excludeScope) {
   return { name, handle };
 }
 
-// Isolasi container Quote Tweet asli tanpa tertukar dengan Link Preview Card
 function findQuoteContainer(article) {
   if (!article) return null;
   const explicit = article.querySelector('[data-testid="quoteTweet"]');
@@ -537,7 +654,9 @@ function findQuoteContainer(article) {
     if (link.closest('[data-testid^="card"]')) continue;
     const hasUser = Boolean(link.querySelector('[data-testid="User-Name"]'));
     const hasBody = Boolean(
-      link.querySelector('[data-testid="tweetText"], [data-testid="tweetPhoto"], [data-testid="videoPlayer"]')
+      link.querySelector(
+        '[data-testid="tweetText"], [data-testid="tweetPhoto"], [data-testid="videoPlayer"]'
+      )
     );
     if (hasUser && hasBody) return link;
   }
@@ -589,7 +708,6 @@ function extractCardSummary(root, excludeScope) {
   return "";
 }
 
-// Hindari salah membaca alt avatar profil user (src=".../profile_images/...") sebagai gambar grafik!
 function extractImageAlt(root, excludeScope) {
   const imgs = root.querySelectorAll('img[alt]:not([alt=""])');
   const alts = [];
@@ -621,6 +739,52 @@ function extractImageAlt(root, excludeScope) {
   return alts.slice(0, 2).join(" | ");
 }
 
+function normalizeXMediaUrl(rawSrc) {
+  const src = String(rawSrc || "").trim();
+  if (!/^https?:\/\//i.test(src)) return "";
+  try {
+    const u = new URL(src);
+    if (u.hostname.includes("twimg.com") && u.searchParams.has("name")) {
+      u.searchParams.set("name", "medium");
+    }
+    return u.toString();
+  } catch (e) {
+    return src;
+  }
+}
+
+// Ekstrak URL gambar asli (chart, screenshot, kartu) untuk mode Vision multimodal
+function extractImageUrls(root, excludeScope) {
+  if (!root || typeof root.querySelectorAll !== "function") return [];
+  const imgs = root.querySelectorAll(
+    '[data-testid="tweetPhoto"] img[src], [data-testid^="card"] img[src], [data-testid="videoPlayer"] img[src], img[src*="pbs.twimg.com/media/"]'
+  );
+  const urls = [];
+  for (const img of imgs) {
+    if (excludeScope && excludeScope.contains(img)) continue;
+    if (img.closest('[data-testid^="Tweet-User-Avatar"], [data-testid="UserAvatar-Container"]')) {
+      continue;
+    }
+    const rawSrc = String(img.getAttribute("src") || "");
+    const low = rawSrc.toLowerCase();
+    if (
+      !rawSrc ||
+      low.includes("profile_images") ||
+      low.includes("profile_banners") ||
+      low.includes("twemoji") ||
+      low.includes("/emoji/")
+    ) {
+      continue;
+    }
+    const normalized = normalizeXMediaUrl(rawSrc);
+    if (normalized && !urls.includes(normalized)) {
+      urls.push(normalized);
+      if (urls.length >= 2) break;
+    }
+  }
+  return urls;
+}
+
 function detectMediaType(root, excludeScope, pollOptions, articleTitle) {
   if (pollOptions) return "Poll";
   if (articleTitle) return "X Longform Article";
@@ -644,7 +808,6 @@ function extractReplyTo(root) {
   return "";
 }
 
-// Ambil kode bahasa asli dari atribut lang="..." milik X (<div data-testid="tweetText" lang="ja/ko/zh/...">)
 function extractDomLang(primaryNode, root, excludeScope) {
   const pickValid = (val) => {
     const code = String(val || "").trim().toLowerCase();
@@ -670,7 +833,6 @@ function extractDomLang(primaryNode, root, excludeScope) {
   return "";
 }
 
-// Deteksi jika post di X sedang dalam kondisi sudah diterjemahkan ("Translated from Japanese" / "Diterjemahkan dari Jepang")
 const TRANSLATED_LANG_NAME_MAP = {
   japanese: "ja",
   jepang: "ja",
@@ -763,6 +925,7 @@ function extractDataFromArticle(article) {
   const pollOptions = extractPollOptions(article, quoteRoot);
   const cardSummary = extractCardSummary(article, quoteRoot);
   const imageAlt = extractImageAlt(article, quoteRoot);
+  let imageUrls = extractImageUrls(article, quoteRoot);
   const mediaType = detectMediaType(article, quoteRoot, pollOptions, longform.title);
 
   let quotedText = "";
@@ -782,6 +945,9 @@ function extractDataFromArticle(article) {
           : "";
       quotedText = truncateAtWord(qPrefix + qBody, 340);
     }
+    if (imageUrls.length === 0) {
+      imageUrls = extractImageUrls(quoteRoot, null);
+    }
   }
 
   const replyTo = extractReplyTo(article);
@@ -792,7 +958,8 @@ function extractDataFromArticle(article) {
     !pollOptions &&
     !quotedText &&
     !cardSummary &&
-    !imageAlt
+    !imageAlt &&
+    imageUrls.length === 0
   ) {
     return null;
   }
@@ -809,6 +976,7 @@ function extractDataFromArticle(article) {
     quotedLang,
     cardSummary,
     imageAlt,
+    imageUrls,
     mediaType,
     replyTo,
     parentContext: "",
@@ -857,8 +1025,11 @@ function extractContextFromDialogNonArticle(dialog, replyBox) {
   const pollOptions = extractPollOptions(scope, composerWrap);
   const cardSummary = extractCardSummary(scope, composerWrap);
   const imageAlt = extractImageAlt(scope, composerWrap);
+  const imageUrls = extractImageUrls(scope, composerWrap);
 
-  if (!tweetText && !pollOptions && !cardSummary && !imageAlt) return null;
+  if (!tweetText && !pollOptions && !cardSummary && !imageAlt && imageUrls.length === 0) {
+    return null;
+  }
   return {
     name,
     handle,
@@ -871,6 +1042,7 @@ function extractContextFromDialogNonArticle(dialog, replyBox) {
     quotedLang: "",
     cardSummary,
     imageAlt,
+    imageUrls,
     mediaType: detectMediaType(scope, composerWrap, pollOptions, ""),
     replyTo: extractReplyTo(dialog),
     parentContext: "",
@@ -890,6 +1062,7 @@ function getPostContext(replyBox) {
     quotedLang: "",
     cardSummary: "",
     imageAlt: "",
+    imageUrls: [],
     mediaType: "",
     replyTo: "",
     parentContext: "",
@@ -897,7 +1070,7 @@ function getPostContext(replyBox) {
 
   const composerReplyTo = extractComposerReplyTo(replyBox);
 
-  // 1. Jika di dalam Modal Dialog (Reply / Quote Tweet / Thread Reply)
+  // 1. Modal Dialog (Reply / Quote Tweet / Thread Reply)
   const dialog = replyBox.closest('[role="dialog"]');
   if (dialog) {
     const articles = [
@@ -931,7 +1104,7 @@ function getPostContext(replyBox) {
     return dialogFallback || emptyContext;
   }
 
-  // 2. Jika reply box berada langsung di dalam <article>
+  // 2. Reply box langsung di dalam <article>
   const ownArticle = replyBox.closest("article");
   if (ownArticle) {
     const extracted = extractDataFromArticle(ownArticle);
@@ -941,8 +1114,7 @@ function getPostContext(replyBox) {
     }
   }
 
-  // 3. Halaman detail status (/status/<id>) — utamakan focal tweet utama (tabindex="-1" atau permalink status)
-  //    agar tidak pernah meleset mengambil parent tweet di atasnya saat tinggi elemen overlap!
+  // 3. Halaman detail status (/status/<id>) — utamakan focal tweet utama
   const allTweets = [...document.querySelectorAll('article[data-testid="tweet"]')];
   const statusMatch = location.pathname.match(/\/status\/(\d+)/);
   if (statusMatch) {
@@ -963,7 +1135,7 @@ function getPostContext(replyBox) {
     }
   }
 
-  // 4. Fallback: cari tweet terdekat di atas kotak balasan
+  // 4. Fallback: tweet terdekat di atas kotak balasan
   const boxRect = replyBox.getBoundingClientRect();
   let bestIdx = -1;
   let minDistance = Infinity;
@@ -992,7 +1164,7 @@ function getPostContext(replyBox) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// Mount Container & Zero-Reflow Smart Injection
+// Mount Container, Quick Angle Mini-Menu & Zero-Reflow Injection
 // ═══════════════════════════════════════════════════════════════
 function getMountContainer(box) {
   if (!box) return null;
@@ -1030,13 +1202,16 @@ function shouldInjectForBox(box, container) {
 
 function setButtonVisualState(btn, state, langCode = "") {
   if (!btn) return;
+  const group = btn.closest?.(".x-ai-reply-group");
   if (state === "loading") {
     btn.dataset.loading = "true";
     delete btn.dataset.state;
+    if (group) group.dataset.busy = "true";
     btn.innerHTML = `${SPINNER_SVG}<span>Thinking…</span>`;
   } else if (state === "done") {
     delete btn.dataset.loading;
     btn.dataset.state = "done";
+    if (group) delete group.dataset.busy;
     const shortLang =
       langCode && langCode !== "same"
         ? ` · ${String(langCode).split("-")[0].toUpperCase()}`
@@ -1045,27 +1220,35 @@ function setButtonVisualState(btn, state, langCode = "") {
   } else {
     delete btn.dataset.loading;
     delete btn.dataset.state;
+    if (group) delete group.dataset.busy;
     btn.innerHTML = `${SPARKLE_SVG}<span>AI Reply</span>`;
   }
 }
 
 function cleanupOrphanButtons() {
-  for (const btn of mountedButtons) {
-    const container = btn.parentElement;
+  for (const group of mountedGroups) {
+    const container = group.parentElement;
     if (!container || !container.isConnected) {
-      btn.remove();
-      mountedButtons.delete(btn);
+      group.remove();
+      mountedGroups.delete(group);
       continue;
     }
     const replyBox = container.querySelector(
       'div[contenteditable="true"][data-testid^="tweetTextarea"]'
     );
     if (!replyBox) {
-      btn.remove();
-      mountedButtons.delete(btn);
+      group.remove();
+      mountedGroups.delete(group);
     }
   }
 }
+
+const QUICK_ANGLES = [
+  { id: "agree", label: "👍 Agree", title: "Dukung / setuju dengan alasan konkret" },
+  { id: "ask", label: "🤔 Ask", title: "Ajukan pertanyaan lanjutan singkat" },
+  { id: "counter", label: "⚡ Counter", title: "Beri sudut pandang kritis / skeptis" },
+  { id: "witty", label: "😎 Witty", title: "Komentar santai / dry humor" },
+];
 
 function insertButtonIntoReplyBoxes() {
   cleanupOrphanButtons();
@@ -1086,10 +1269,11 @@ function insertButtonIntoReplyBoxes() {
 
     const container = getMountContainer(box);
     if (!container) continue;
-    const alreadyInDom = container.querySelector(".x-ai-reply-button");
-    if (alreadyInDom) {
-      boxButtonMap.set(box, alreadyInDom);
-      mountedButtons.add(alreadyInDom);
+    const alreadyBtn = container.querySelector(".x-ai-reply-button");
+    if (alreadyBtn) {
+      boxButtonMap.set(box, alreadyBtn);
+      const existingGroup = alreadyBtn.closest(".x-ai-reply-group");
+      if (existingGroup) mountedGroups.add(existingGroup);
       continue;
     }
     if (!shouldInjectForBox(box, container)) continue;
@@ -1102,12 +1286,37 @@ function insertButtonIntoReplyBoxes() {
   for (let i = 0; i < pendingMounts.length; i++) {
     const { box, container, needsRelative } = pendingMounts[i];
 
+    const group = document.createElement("div");
+    group.className = "x-ai-reply-group";
+    group.setAttribute("data-translate", "no");
+
+    const angleBar = document.createElement("div");
+    angleBar.className = "x-ai-angle-bar";
+
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "x-ai-reply-button";
-    btn.title = "Generate balasan singkat sesuai konteks tweet";
+    btn.title = "Generate AI Reply (Alt+R) · Hover untuk pilih sudut pandang cepat";
     btn.setAttribute("data-translate", "no");
     setButtonVisualState(btn, "idle");
+
+    for (const item of QUICK_ANGLES) {
+      const pill = document.createElement("button");
+      pill.type = "button";
+      pill.className = "x-ai-angle-pill";
+      pill.textContent = item.label;
+      pill.title = item.title;
+      pill.dataset.angle = item.id;
+      pill.addEventListener("mousedown", (e) => e.preventDefault());
+      pill.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (btn.dataset.loading === "true") return;
+        setButtonVisualState(btn, "loading");
+        generateText(box, btn, container, item.id);
+      });
+      angleBar.appendChild(pill);
+    }
 
     btn.addEventListener("mousedown", (e) => {
       e.preventDefault();
@@ -1118,24 +1327,29 @@ function insertButtonIntoReplyBoxes() {
       e.stopPropagation();
       if (btn.dataset.loading === "true") return;
       setButtonVisualState(btn, "loading");
-      generateText(box, btn, container);
+      generateText(box, btn, container, "auto");
     });
 
     if (needsRelative) {
       container.style.position = "relative";
     }
     if (!box.dataset.xAiPadded) {
-      box.style.paddingRight = "94px";
+      box.style.paddingRight = "96px";
       box.dataset.xAiPadded = "true";
     }
 
-    container.appendChild(btn);
+    group.appendChild(angleBar);
+    group.appendChild(btn);
+    container.appendChild(group);
+
     boxButtonMap.set(box, btn);
-    mountedButtons.add(btn);
+    mountedGroups.add(group);
   }
 }
 
-// Deteksi & potong jika output API pernah mengulang kalimat dua kali (termasuk aksara CJK pendek)
+// ═══════════════════════════════════════════════════════════════
+// Reply Sanitizer & Non-Blocking Translation Preview
+// ═══════════════════════════════════════════════════════════════
 function dedupeRepeatedText(text) {
   const s = String(text || "").trim();
   if (s.length < 8) return s;
@@ -1177,7 +1391,35 @@ function cleanModelReply(rawText) {
   return dedupeRepeatedText(cleaned);
 }
 
-async function generateText(box, btn, mountContainer) {
+function showForeignTranslationPreview(replyText, langCode, langLabel) {
+  if (!settingsCache.translationPreview) return;
+  if (!langCode || langCode === "id" || langCode === "en" || langCode === "same") return;
+
+  try {
+    chrome.runtime.sendMessage(
+      {
+        action: "translatePreview",
+        endpoint: buildEndpoint(settingsCache.baseUrl),
+        apiKey: settingsCache.apiKey.trim(),
+        model: settingsCache.model,
+        timeoutMs: 20000,
+        replyText,
+        sourceLang: langLabel || langCode,
+      },
+      (res) => {
+        if (chrome.runtime.lastError || !res || !res.ok || !res.translation) return;
+        const tag = String(langCode).toUpperCase();
+        showToast(res.translation, {
+          type: "translate",
+          title: `Arti Balasan (${tag} → ID)`,
+          duration: 8500,
+        });
+      }
+    );
+  } catch (e) {}
+}
+
+async function generateText(box, btn, mountContainer, angle = "auto") {
   let succeeded = false;
 
   try {
@@ -1186,7 +1428,7 @@ async function generateText(box, btn, mountContainer) {
       const waitSec = Math.ceil((MIN_REQUEST_INTERVAL_MS - (now - lastRequestTime)) / 1000);
       showToast(`Tunggu ${waitSec} detik sebelum generate lagi.`, {
         type: "warn",
-        duration: 2600,
+        duration: 2400,
       });
       return;
     }
@@ -1212,7 +1454,8 @@ async function generateText(box, btn, mountContainer) {
       post.pollOptions ||
       post.quotedText ||
       post.cardSummary ||
-      post.imageAlt;
+      post.imageAlt ||
+      (Array.isArray(post.imageUrls) && post.imageUrls.length > 0);
 
     if (!hasContent) {
       showToast("Konteks tweet tidak terdeteksi. Pastikan tweet terlihat di layar.", {
@@ -1231,9 +1474,11 @@ async function generateText(box, btn, mountContainer) {
         model: settingsCache.model,
         systemPrompt: settingsCache.prompt,
         timeoutMs,
+        angle,
+        visionMode: settingsCache.visionMode,
         post,
       },
-      timeoutMs + 20000
+      timeoutMs + 25000
     );
 
     if (!result || result.error) {
@@ -1290,6 +1535,13 @@ async function generateText(box, btn, mountContainer) {
         setButtonVisualState(btn, "idle");
       }
     }, 1400);
+
+    // Non-blocking preview terjemahan Indonesia saat membalas bahasa asing (ZH/JA/KO/AR/RU/ES/dll.)
+    showForeignTranslationPreview(
+      replyText,
+      result.detectedLang,
+      result.detectedLangLabel
+    );
   } catch (err) {
     console.error("[Yap Extension] Error:", err);
     const msg = err?.message || String(err);
@@ -1318,19 +1570,6 @@ async function generateText(box, btn, mountContainer) {
 
 // ═══════════════════════════════════════════════════════════════
 // insertTextProperly — Anti Double-Text untuk Draft.js X
-//
-// Kenapa sebelumnya muncul teks double (separuh putih + separuh biru):
-//   Saat kotak reply inline belum ter-focus, memanggil execCommand("insertText")
-//   secara sinkron membuat:
-//     (1) Browser menyisipkan raw text node putih ke DOM, DAN
-//     (2) Draft.js juga menyisipkan teks yang sama ke EditorState (dengan @mention biru).
-//
-// Solusi permanen:
-//   1. Focus editor lalu tunggu 1 frame agar React/Draft.js selesai expand & sync SelectionState.
-//   2. Jika ada teks lama, selectAll -> tunggu 1 frame -> delete -> tunggu 1 frame.
-//   3. Gunakan synthetic ClipboardEvent("paste") sebagai metode UTAMA:
-//      Browser TIDAK PERNAH menyisipkan native DOM text untuk synthetic paste,
-//      sedangkan Draft.js editOnPaste memanggil preventDefault() dan merender tepat 1x!
 // ═══════════════════════════════════════════════════════════════
 function waitFrames(ms = 24) {
   return new Promise((resolve) => {
@@ -1372,7 +1611,6 @@ async function insertTextProperly(el, text, fallbackScope) {
   observer.disconnect();
 
   try {
-    // 1. Focus dan beri 1 frame agar inline composer X selesai expand & inisialisasi SelectionState
     if (document.activeElement !== el) {
       el.focus();
       await waitFrames(35);
@@ -1388,7 +1626,6 @@ async function insertTextProperly(el, text, fallbackScope) {
       }
     }
 
-    // 2. Bersihkan teks sebelumnya (jika user klik ulang untuk regenerate)
     if (cleanText(el.innerText).length > 0) {
       try {
         document.execCommand("selectAll", false, null);
@@ -1398,7 +1635,6 @@ async function insertTextProperly(el, text, fallbackScope) {
       } catch (e) {}
     }
 
-    // 3. UTAMA: Synthetic ClipboardEvent("paste") -> hanya Draft.js EditorState yang merender (0% native DOM ghost text!)
     let handledByPaste = false;
     try {
       const dt = new DataTransfer();
@@ -1408,7 +1644,6 @@ async function insertTextProperly(el, text, fallbackScope) {
         bubbles: true,
         cancelable: true,
       });
-      // dispatchEvent mengembalikan FALSE jika Draft.js memanggil pasteEvent.preventDefault()
       const notCancelled = el.dispatchEvent(pasteEvent);
       if (!notCancelled) {
         handledByPaste = true;
@@ -1423,7 +1658,6 @@ async function insertTextProperly(el, text, fallbackScope) {
       console.warn("[Yap Extension] ClipboardEvent paste gagal, lanjut fallback:", e);
     }
 
-    // 4. Fallback HANYA jika editor bukan Draft.js / tidak menangani event paste
     if (!handledByPaste) {
       try {
         document.execCommand("insertText", false, text);
@@ -1443,6 +1677,51 @@ async function insertTextProperly(el, text, fallbackScope) {
       }
     }, 450);
   }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Keyboard Shortcut: Alt + R untuk langsung trigger AI Reply
+// ═══════════════════════════════════════════════════════════════
+function findTargetButtonForShortcut() {
+  const activeEl = document.activeElement;
+  if (activeEl && typeof activeEl.closest === "function") {
+    const focusedEditor = activeEl.closest(
+      'div[contenteditable="true"][data-testid^="tweetTextarea"]'
+    );
+    if (focusedEditor) {
+      const btn = boxButtonMap.get(focusedEditor);
+      if (btn && btn.isConnected) return btn;
+    }
+  }
+
+  const openDialog = document.querySelector?.('[role="dialog"]');
+  if (openDialog) {
+    const dialogBtn = openDialog.querySelector?.(".x-ai-reply-button");
+    if (dialogBtn) return dialogBtn;
+  }
+
+  for (const group of mountedGroups) {
+    if (group.isConnected) {
+      const btn = group.querySelector(".x-ai-reply-button");
+      if (btn) return btn;
+    }
+  }
+  return null;
+}
+
+if (typeof document.addEventListener === "function") {
+  document.addEventListener("keydown", (e) => {
+    if (!settingsCache.shortcutEnabled) return;
+    if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    if (e.code !== "KeyR" && String(e.key || "").toLowerCase() !== "r") return;
+
+    const btn = findTargetButtonForShortcut();
+    if (!btn || btn.dataset.loading === "true") return;
+
+    e.preventDefault();
+    e.stopPropagation();
+    btn.click();
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════
