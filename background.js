@@ -1,5 +1,5 @@
 // Background Service Worker — CORS-free API proxy for X AI Reply.
-// v5.1 Global Edition: Anti-Hallucination Grounding, Guaranteed Multilingual Engine,
+// v5.2.1 Global Edition: Anti-Hallucination Grounding, Guaranteed Multilingual Engine,
 // Vision Multimodal + Auto Text Fallback, Quick Reaction Angles, Anti-Repetition Memory,
 // and Live English Translation Preview for non-English replies.
 
@@ -394,6 +394,16 @@ function detectTickersAndProjects(text) {
   };
 }
 
+function angleFromSavedTone(systemPrompt) {
+  const text = String(systemPrompt || "").toLowerCase();
+  if (!text) return "auto";
+  if (/\bwitty\b|\bdeadpan\b|\bclever\b/.test(text)) return "witty";
+  if (/\bfollow-up\b|\bask a short\b|\bcurious\b|\bcritical take\b/.test(text)) return "ask";
+  if (/\bcrypto-native\b|\bcontrarian\b|\bskeptical\b|\bcounter\b/.test(text)) return "counter";
+  if (/\bdry\b|\beffortless\b|\bcasual\b/.test(text)) return "agree";
+  return "auto";
+}
+
 function buildAngleDirective(angle) {
   switch (String(angle || "auto").toLowerCase()) {
     case "agree":
@@ -696,7 +706,9 @@ function buildLanguageAndFormatDirectives(lang, angle = "auto") {
 }
 
 function contextLock(lang, post, detected, customStylePrompt, angle, recentReplies) {
-  const intentBlock = analyzePostIntent(post, angle);
+  const resolvedAngle =
+    angle && angle !== "auto" ? angle : angleFromSavedTone(customStylePrompt);
+  const intentBlock = analyzePostIntent(post, resolvedAngle);
   const entityBlock = buildEntityAnchor(post, detected);
   const memoryBlock = buildAntiRepetitionBlock(recentReplies);
   const { formatBlock, userReminder } = buildLanguageAndFormatDirectives(lang, angle);

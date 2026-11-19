@@ -1,4 +1,4 @@
-// X AI Reply — Content Script (v5.1 Global Edition)
+// X AI Reply — Content Script (v5.2.1 Global Edition)
 // GPU-composited "AI Reply" + Quick Angle Mini-Menu, Alt+R Shortcut,
 // Vision Image Extractor, Multi-Layer Context Engine, English Translation Preview,
 // & Anti-Double-Text Draft.js Paste Handler.
@@ -47,19 +47,122 @@ const COMPOSER_SELECTOR = [
 
 function isComposerBox(el) {
   if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
-  if (!el.matches?.(COMPOSER_SELECTOR)) return false;
-  if (el.closest?.(".x-ai-reply-group, .x-ai-toast-host")) return false;
-  const testId = el.getAttribute("data-testid") || "";
+  if (el.closest?.(".x-ai-reply-group, .x-ai-toast-host, [role='search'], [data-testid='SearchBox_Search_Input']")) {
+    return false;
+  }
+
+  const editable =
+    el.matches?.(COMPOSER_SELECTOR) ||
+    (el.getAttribute("contenteditable") === "true" &&
+      Boolean(el.closest('[data-testid^="tweetTextarea"], [data-testid*="tweetTextarea"]')));
+  if (!editable) return false;
+
+  const testId = `${el.getAttribute("data-testid") || ""} ${el.closest("[data-testid]")?.getAttribute("data-testid") || ""}`;
   if (/tweetTextarea/i.test(testId)) return true;
   if (el.getAttribute("data-lexical-editor") === "true") return true;
-  if (el.getAttribute("contenteditable") === "plaintext-only") return true;
+  if (el.getAttribute("contenteditable") === "plaintext-only" && el.getAttribute("role") === "textbox") {
+    return true;
+  }
   const label = `${el.getAttribute("aria-label") || ""} ${el.getAttribute("aria-placeholder") || ""}`;
   return /post|reply|quote|what.?s happening|tweet|balas|kutip/i.test(label);
 }
 
+function queryDeep(root, selector) {
+  const scope = root || document;
+  const found = [];
+  const seen = new Set();
+  const visit = (node) => {
+    if (!node || seen.has(node)) return;
+    seen.add(node);
+    if (node.querySelectorAll) {
+      try {
+        found.push(...node.querySelectorAll(selector));
+      } catch (e) {}
+    }
+    // Only check direct shadow hosts instead of querying all children
+    if (node.querySelectorAll) {
+      try {
+        const shadowHosts = node.querySelectorAll("[data-testid], [role], [contenteditable]");
+        for (const child of shadowHosts) {
+          if (child.shadowRoot) visit(child.shadowRoot);
+        }
+      } catch (e) {}
+    }
+  };
+  visit(scope);
+  return found;
+}
+
+function isGrokSurface(el) {
+  if (!el) return false;
+  if (/\/i\/grok|\/grok/i.test(location.pathname)) return true;
+  const text = `${el.getAttribute?.("aria-label") || ""} ${el.getAttribute?.("placeholder") || ""} ${el.textContent || ""}`.slice(0, 240);
+  return /ask anything|what should we explore|meet grok/i.test(text);
+}
+
+function findComposerFromPlaceholder(root) {
+  const scope = root && (root.querySelectorAll || root instanceof ShadowRoot) ? root : document;
+  const hints = [];
+  const walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const value = node.nodeValue || "";
+      return /post your reply|what.?s happening|tweet your reply/i.test(value)
+        ? NodeFilter.FILTER_ACCEPT
+        : NodeFilter.FILTER_REJECT;
+    },
+  });
+  let textNode = walker.nextNode();
+  let guard = 0;
+  while (textNode && guard < 12) {
+    const el = textNode.parentElement;
+    if (el) hints.push(el);
+    textNode = walker.nextNode();
+    guard += 1;
+  }
+
+  const buttons = queryDeep(scope, '[data-testid="tweetButtonInline"], [data-testid="tweetButton"]');
+  const found = [];
+  const seen = new Set();
+
+  const consider = (start) => {
+    if (!start) return;
+    let node = start;
+    for (let depth = 0; node && depth < 8; depth += 1, node = node.parentElement) {
+      const editable = node.querySelector?.(
+        '[contenteditable="true"], [contenteditable="plaintext-only"], [role="textbox"]'
+      );
+      if (!editable || seen.has(editable)) continue;
+      if (editable.closest?.("[role='search'], [data-testid='SearchBox_Search_Input']")) continue;
+      seen.add(editable);
+      found.push(editable);
+      return;
+    }
+  };
+
+  hints.forEach(consider);
+  buttons.forEach((button) => consider(button.parentElement));
+  return found;
+}
+
 function queryComposerBoxes(root) {
-  const scope = root && root.querySelectorAll ? root : document;
-  return [...scope.querySelectorAll(COMPOSER_SELECTOR)].filter(isComposerBox);
+  const scope = root && (root.querySelectorAll || root instanceof ShadowRoot) ? root : document;
+  const nodes = queryDeep(
+    scope,
+    `${COMPOSER_SELECTOR}, [data-testid^="tweetTextarea"] [contenteditable="true"], [data-testid*="tweetTextarea"] [contenteditable], [role="textbox"][contenteditable]`
+  );
+  const found = [];
+  const seen = new Set();
+  for (const node of [...nodes, ...findComposerFromPlaceholder(scope)]) {
+    if (seen.has(node)) continue;
+    const editable = node.getAttribute("contenteditable");
+    const hinted = editable === "true" || editable === "plaintext-only" || node.getAttribute("role") === "textbox";
+    if (!isComposerBox(node) && !hinted) continue;
+    if (node.closest?.("[role='search'], [data-testid='SearchBox_Search_Input'], .x-ai-reply-group")) continue;
+    if (isGrokSurface(node)) continue;
+    seen.add(node);
+    found.push(node);
+  }
+  return found;
 }
 
 function hasRelevantDomMutation(mutations) {
@@ -145,15 +248,23 @@ function injectStyles() {
       to { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
     }
 
+    #x-ai-reply-overlay {
+      position: fixed;
+      inset: 0;
+      width: 0;
+      height: 0;
+      z-index: 2147483000;
+      pointer-events: none;
+      overflow: visible;
+    }
+
     .x-ai-reply-group {
-      position: relative;
-      z-index: 20;
+      position: fixed;
+      z-index: 2147483646;
       display: inline-flex;
       align-items: center;
       gap: 5px;
-      margin-left: auto;
       pointer-events: none;
-      flex: 0 0 auto;
     }
 
     .x-ai-angle-bar {
@@ -161,13 +272,17 @@ function injectStyles() {
       align-items: center;
       gap: 2px;
       height: 27px;
+      position: absolute;
+      right: 0;
+      bottom: 34px;
+      margin-bottom: 0;
       padding: 2px 4px;
       border-radius: 999px;
       background: rgba(15, 20, 25, 0.94);
       border: 1px solid rgba(255, 255, 255, 0.16);
       box-shadow: 0 4px 14px rgba(0, 0, 0, 0.32);
       opacity: 0;
-      transform: translate3d(8px, 0, 0) scale(0.95);
+      transform: translate3d(0, 6px, 0) scale(0.96);
       pointer-events: none;
       backface-visibility: hidden;
       transition:
@@ -176,7 +291,8 @@ function injectStyles() {
     }
 
     .x-ai-reply-group:hover .x-ai-angle-bar,
-    .x-ai-reply-group:focus-within .x-ai-angle-bar {
+    .x-ai-reply-group:focus-within .x-ai-angle-bar,
+    .x-ai-reply-group[data-open="true"] .x-ai-angle-bar {
       opacity: 1;
       transform: translate3d(0, 0, 0) scale(1);
       pointer-events: auto;
@@ -1074,6 +1190,89 @@ function extractContextFromDialogNonArticle(dialog, replyBox) {
   };
 }
 
+function visibleText(el) {
+  if (!el) return "";
+  return cleanText(el.innerText || el.textContent || "");
+}
+
+function looksLikePostBody(text) {
+  const value = cleanText(text);
+  if (value.length < 8 || value.length > 1200) return false;
+  if (/^(replying to|membalas|post your reply|what.?s happening|reply|post|quote)$/i.test(value)) return false;
+  if (/^(show more|show this thread|translate post|view|follow)$/i.test(value)) return false;
+  return true;
+}
+
+function contextFromVisibleComposer(replyBox) {
+  const anchor = replyBox?.__xAiAnchor && replyBox.__xAiAnchor.isConnected ? replyBox.__xAiAnchor : replyBox;
+  if (!anchor) return null;
+  const anchorRect = anchor.getBoundingClientRect();
+  const panel =
+    anchor.closest('[role="dialog"]') ||
+    [...document.querySelectorAll('[role="dialog"]')].find((dialog) => {
+      const rect = dialog.getBoundingClientRect();
+      return rect.left <= anchorRect.right && rect.right >= anchorRect.left && rect.top <= anchorRect.bottom && rect.bottom >= anchorRect.top - 40;
+    }) ||
+    null;
+  const scope = panel || document;
+  const blocks = queryDeep(scope, "article, [data-testid='tweetText'], [data-testid='cellInnerDiv'], div, span");
+  let best = "";
+  let bestEl = null;
+  let bestScore = Infinity;
+  let replyTo = "";
+  let name = "";
+  let handle = "";
+
+  for (const el of blocks) {
+    if (!el || el.children?.length > 8) continue;
+    if (el.closest?.(".x-ai-reply-group, .x-ai-toast-host")) continue;
+    const text = visibleText(el);
+    if (!text) continue;
+    const rect = el.getBoundingClientRect();
+    if (rect.width < 40 || rect.height < 8 || rect.bottom > anchorRect.top + 30) continue;
+    if (panel && !panel.contains(el)) continue;
+    const dist = anchorRect.top - rect.bottom;
+    if (dist < -20 || dist > 900) continue;
+    if (/^(replying to|membalas)\b/i.test(text) && text.length < 160) {
+      replyTo = text;
+      handle = (text.match(/@[\w_]+/) || [handle])[0] || handle;
+      continue;
+    }
+    const userMatch = text.match(/^(.{1,40}?)\s+(@[\w_]{2,20})\b/);
+    if (userMatch && text.length < 180 && dist < 420) {
+      name = name || userMatch[1].replace(/[·•].*$/, "").trim();
+      handle = handle || userMatch[2];
+    }
+    if (!looksLikePostBody(text)) continue;
+    const score = dist + Math.abs(text.length - 140) * 0.15;
+    if (score < bestScore) {
+      bestScore = score;
+      best = text;
+      bestEl = el;
+    }
+  }
+
+  if (!best && !replyTo) return null;
+  const langNode = bestEl?.closest?.("[lang]") || bestEl?.querySelector?.("[lang]");
+  return {
+    name,
+    handle: handle || (replyTo.match(/@[\w_]+/) || [""])[0],
+    tweetText: truncateAtWord(best || replyTo, 650),
+    tweetLang: langNode?.getAttribute?.("lang") || bestEl?.getAttribute?.("lang") || "",
+    translatedFromLang: extractTranslatedFromLang(bestEl?.parentElement || document.body, null),
+    articleTitle: "",
+    pollOptions: "",
+    quotedText: "",
+    quotedLang: "",
+    cardSummary: "",
+    imageAlt: "",
+    imageUrls: [],
+    mediaType: "",
+    replyTo,
+    parentContext: "",
+  };
+}
+
 function getPostContext(replyBox) {
   const emptyContext = {
     name: "",
@@ -1126,7 +1325,9 @@ function getPostContext(replyBox) {
     }
 
     const dialogFallback = extractContextFromDialogNonArticle(dialog, replyBox);
-    return dialogFallback || emptyContext;
+    if (dialogFallback) return dialogFallback;
+    const visibleDialog = contextFromVisibleComposer(replyBox);
+    return visibleDialog || emptyContext;
   }
 
   // 2. Reply box directly inside <article>
@@ -1185,40 +1386,57 @@ function getPostContext(replyBox) {
     }
   }
 
-  return emptyContext;
+  return contextFromVisibleComposer(replyBox) || emptyContext;
 }
 
 // ═══════════════════════════════════════════════════════════════
 // Mount Container, Quick Angle Mini-Menu & Zero-Reflow Injection
 // ═══════════════════════════════════════════════════════════════
-function getToolbarMount(box) {
-  if (!box) return null;
-  const dialog = box.closest('[role="dialog"]');
-  const cell = box.closest('[data-testid="cellInnerDiv"]');
-  const scopes = [dialog, cell, box.parentElement].filter(Boolean);
+function getOverlayHost() {
+  let host = document.getElementById("x-ai-reply-overlay");
+  if (host && host.isConnected) return host;
+  host = document.createElement("div");
+  host.id = "x-ai-reply-overlay";
+  host.setAttribute("data-translate", "no");
+  (document.body || document.documentElement).appendChild(host);
+  return host;
+}
 
-  for (const scope of scopes) {
-    const toolbars = [...scope.querySelectorAll('[data-testid="toolBar"]')];
-    const toolbar = toolbars.find((bar) => !bar.contains(box)) || toolbars[0];
-    if (toolbar) return toolbar;
+function positionReplyGroup(group, box) {
+  const anchor = group?.__xAiAnchor && group.__xAiAnchor.isConnected ? group.__xAiAnchor : box;
+  if (!group || !anchor || !anchor.isConnected) return;
+  const rect = anchor.getBoundingClientRect();
+  if (rect.width < 8 || rect.height < 8 || rect.bottom < 0 || rect.top > window.innerHeight) {
+    group.style.display = "none";
+    return;
   }
+  const width = group.offsetWidth || 108;
+  const height = group.offsetHeight || 32;
+  const left = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
+  const top = Math.max(8, rect.top - height - 8);
+  group.style.display = "inline-flex";
+  group.style.left = `${Math.round(left)}px`;
+  group.style.top = `${Math.round(top)}px`;
+}
 
-  const draftRoot = box.closest(".DraftEditor-root");
-  if (draftRoot && draftRoot.parentElement) return draftRoot.parentElement;
-  return box.parentElement;
+function repositionMountedGroups() {
+  for (const group of mountedGroups) {
+    if (!group.isConnected) continue;
+    const box = group.__xAiBox;
+    if (!box || !box.isConnected) continue;
+    positionReplyGroup(group, box);
+  }
 }
 
 function shouldInjectForBox(box) {
-  const dialog = box.closest('[role="dialog"]');
-  if (dialog) return true;
-  if (/\/status\/\d+/.test(location.pathname)) return true;
-  if (/^\/(home|compose\/post|compose\/tweet)?$/.test(location.pathname)) return true;
-  if (box.closest("article, main, [data-testid='primaryColumn']")) return true;
-
-  const cell = box.closest('[data-testid="cellInnerDiv"]');
-  if (cell && cell.querySelector('article, [data-testid="tweet"]')) return true;
-
-  return false;
+  if (!box || !box.isConnected) return false;
+  const label = `${box.getAttribute("aria-label") || ""} ${box.getAttribute("data-placeholder") || ""} ${box.textContent || ""}`;
+  if (isGrokSurface(box)) return false;
+  if (/post your reply|reply|quote|what.?s happening/i.test(label)) return true;
+  if (box.closest('[role="dialog"], article, main, [data-testid="primaryColumn"], [data-testid="cellInnerDiv"]')) {
+    return true;
+  }
+  return /\/status\/\d+|^\/(home|compose\/post|compose\/tweet)?$/.test(location.pathname);
 }
 
 function setButtonVisualState(btn, state, langCode = "") {
@@ -1246,21 +1464,16 @@ function setButtonVisualState(btn, state, langCode = "") {
   }
 }
 
-function composerStillOpen(group) {
-  const scope =
-    group.closest('[role="dialog"]') ||
-    group.closest('[data-testid="cellInnerDiv"]') ||
-    group.closest("main") ||
-    document;
-  return queryComposerBoxes(scope).length > 0;
-}
-
 function cleanupOrphanButtons() {
   for (const group of mountedGroups) {
-    const container = group.parentElement;
-    if (!container || !container.isConnected || !composerStillOpen(group)) {
+    const box = group.__xAiBox;
+    const anchor = group.__xAiAnchor;
+    if (!group.isConnected || !anchor || !anchor.isConnected) {
       group.remove();
       mountedGroups.delete(group);
+      // Clean up WeakMap references to prevent stale entries blocking new button mounts
+      if (box) boxButtonMap.delete(box);
+      if (anchor) boxButtonMap.delete(anchor);
     }
   }
 }
@@ -1272,38 +1485,86 @@ const QUICK_ANGLES = [
   { id: "witty", label: "😎 Witty", title: "Drop a dry, effortless witty observation" },
 ];
 
+function isSubmitButton(el) {
+  if (!el || el.nodeType !== 1) return false;
+  if (el.closest?.(".x-ai-reply-group, [role='search']")) return false;
+  if (isGrokSurface(el)) return false;
+  const testId = el.getAttribute("data-testid") || "";
+  if (/tweetButton/i.test(testId)) return true;
+  const label = (el.innerText || el.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim();
+  if (!/^(reply|post|quote)$/i.test(label)) return false;
+  const rect = el.getBoundingClientRect();
+  return rect.width >= 36 && rect.width <= 180 && rect.height >= 24 && rect.height <= 64;
+}
+
+function findReplyActionButtons(root) {
+  const scope = root && (root.querySelectorAll || root instanceof ShadowRoot) ? root : document;
+  const nodes = queryDeep(scope, 'button, [role="button"], div[tabindex="0"]');
+  const hits = [];
+  const seen = new Set();
+  for (const node of nodes) {
+    if (!isSubmitButton(node) || seen.has(node)) continue;
+    const nested = node.parentElement?.closest?.("button, [role='button']");
+    if (nested && isSubmitButton(nested)) continue;
+    seen.add(node);
+    hits.push(node);
+  }
+  return hits;
+}
+
+function findEditorNear(anchor) {
+  if (!anchor) return null;
+  let node = anchor;
+  for (let depth = 0; node && depth < 10; depth += 1, node = node.parentElement) {
+    const editors = queryComposerBoxes(node);
+    if (editors.length) return editors[0];
+    const editable = node.querySelector?.(
+      '[contenteditable="true"], [contenteditable="plaintext-only"], [role="textbox"], textarea'
+    );
+    if (editable && !editable.closest?.("[role='search']")) return editable;
+  }
+  // Only return anchor if it is itself an editable element, otherwise null
+  const anchorEditable = anchor.getAttribute?.("contenteditable");
+  if (anchorEditable === "true" || anchorEditable === "plaintext-only" || anchor.getAttribute?.("role") === "textbox") {
+    return anchor;
+  }
+  return null;
+}
+
 function insertButtonIntoReplyBoxes() {
   cleanupOrphanButtons();
 
   const replyBoxes = queryComposerBoxes(document);
-  if (replyBoxes.length === 0) return;
+  const anchors = findReplyActionButtons(document);
+  if (replyBoxes.length === 0 && anchors.length === 0) return;
 
   injectStyles();
 
   // Phase 1: Batch DOM reads
   const pendingMounts = [];
-  for (let i = 0; i < replyBoxes.length; i++) {
-    const box = replyBoxes[i];
-    const existing = boxButtonMap.get(box);
+  const seenAnchors = new Set();
+  const targets = anchors.length
+    ? anchors.map((anchor) => ({ box: findEditorNear(anchor), anchor }))
+    : replyBoxes.map((box) => ({ box, anchor: null }));
+
+  for (const target of targets) {
+    const box = target.box;
+    const anchor = target.anchor;
+    // Skip if findEditorNear could not locate a valid editor for this anchor
+    if (anchor && !box) continue;
+    const key = anchor || box;
+    if (!key || seenAnchors.has(key)) continue;
+    seenAnchors.add(key);
+    const existing = boxButtonMap.get(key);
     if (existing && existing.isConnected) continue;
-
-    const mount = getToolbarMount(box);
-    if (!mount) continue;
-    const alreadyBtn = mount.querySelector(":scope > .x-ai-reply-group .x-ai-reply-button");
-    if (alreadyBtn) {
-      boxButtonMap.set(box, alreadyBtn);
-      const existingGroup = alreadyBtn.closest(".x-ai-reply-group");
-      if (existingGroup) mountedGroups.add(existingGroup);
-      continue;
-    }
-    if (!shouldInjectForBox(box)) continue;
-
-    pendingMounts.push({ box, mount });
+    if (anchor?.parentElement?.querySelector(":scope > .x-ai-reply-group")) continue;
+    if (box && !shouldInjectForBox(box) && !anchor) continue;
+    pendingMounts.push({ box: box || anchor, anchor });
   }
 
   // Phase 2: Batch DOM writes
   for (let i = 0; i < pendingMounts.length; i++) {
-    const { box, mount } = pendingMounts[i];
+    const { box, anchor } = pendingMounts[i];
 
     const group = document.createElement("div");
     group.className = "x-ai-reply-group";
@@ -1326,19 +1587,30 @@ function insertButtonIntoReplyBoxes() {
       pill.textContent = item.label;
       pill.title = item.title;
       pill.dataset.angle = item.id;
-      pill.addEventListener("mousedown", (e) => e.preventDefault());
+      pill.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      });
       pill.addEventListener("click", (e) => {
         e.preventDefault();
         e.stopPropagation();
+        delete group.dataset.open;
         if (btn.dataset.loading === "true") return;
         setButtonVisualState(btn, "loading");
-        generateText(box, btn, mount, item.id);
+        generateText(box, btn, box.parentElement, item.id);
       });
       angleBar.appendChild(pill);
     }
 
     btn.addEventListener("mousedown", (e) => {
       e.preventDefault();
+      e.stopPropagation();
+    });
+    btn.addEventListener("mouseenter", () => {
+      group.dataset.open = "true";
+    });
+    group.addEventListener("mouseleave", () => {
+      delete group.dataset.open;
     });
 
     btn.addEventListener("click", (e) => {
@@ -1346,14 +1618,20 @@ function insertButtonIntoReplyBoxes() {
       e.stopPropagation();
       if (btn.dataset.loading === "true") return;
       setButtonVisualState(btn, "loading");
-      generateText(box, btn, mount, "auto");
+      generateText(box, btn, box.parentElement, "auto");
     });
 
     group.appendChild(angleBar);
     group.appendChild(btn);
-    mount.appendChild(group);
+    group.__xAiBox = box;
+    group.__xAiAnchor = anchor || box;
+    getOverlayHost().appendChild(group);
+    group.style.position = "fixed";
+    group.style.zIndex = "2147483646";
+    positionReplyGroup(group, box);
 
-    boxButtonMap.set(box, btn);
+    boxButtonMap.set(anchor || box, btn);
+    if (box && box !== anchor) boxButtonMap.set(box, btn);
     mountedGroups.add(group);
   }
 }
@@ -1476,6 +1754,18 @@ async function generateText(box, btn, mountContainer, angle = "auto") {
     }
 
     const timeoutMs = Math.round(settingsCache.timeout * 1000);
+    const savedAngle =
+      angle && angle !== "auto"
+        ? angle
+        : /\bwitty\b|\bdeadpan\b|\bclever\b/i.test(settingsCache.prompt)
+          ? "witty"
+          : /\bfollow-up\b|\bask a short\b|\bcurious\b|\bcritical take\b/i.test(settingsCache.prompt)
+            ? "ask"
+            : /\bcrypto-native\b|\bcontrarian\b|\bskeptical\b|\bcounter\b/i.test(settingsCache.prompt)
+              ? "counter"
+              : /\bdry\b|\beffortless\b|\bcasual\b/i.test(settingsCache.prompt)
+                ? "agree"
+                : "auto";
 
     const result = await sendMessageSafe(
       {
@@ -1485,12 +1775,15 @@ async function generateText(box, btn, mountContainer, angle = "auto") {
         model: settingsCache.model,
         systemPrompt: settingsCache.prompt,
         timeoutMs,
-        angle,
+        angle: savedAngle,
         visionMode: settingsCache.visionMode,
         post,
       },
       timeoutMs + 25000
     );
+
+    // Update rate limit timestamp regardless of success/failure to prevent spam
+    lastRequestTime = Date.now();
 
     if (!result || result.error) {
       const errObj = new Error(result?.error || "Failed to contact API");
@@ -1507,8 +1800,6 @@ async function generateText(box, btn, mountContainer, angle = "auto") {
       else if (rawErr) msg = JSON.stringify(rawErr).slice(0, 180);
       throw new Error(`HTTP ${result.status} — ${msg}`);
     }
-
-    lastRequestTime = Date.now();
 
     const messageObj = result.data?.choices?.[0]?.message;
     let rawReply = messageObj?.content;
@@ -1668,12 +1959,40 @@ async function insertTextProperly(el, text, fallbackScope) {
     }
 
     if (!handledByPaste) {
+      // Try InputEvent-based insertion first (modern editors including Lexical)
+      let insertedViaInput = false;
       try {
-        document.execCommand("insertText", false, text);
-      } catch (e) {
-        el.textContent = text;
-        el.dispatchEvent(new Event("input", { bubbles: true }));
+        const inputEvent = new InputEvent("beforeinput", {
+          inputType: "insertText",
+          data: text,
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+        });
+        el.dispatchEvent(inputEvent);
+        await waitFrames(20);
+        const afterInput = cleanText(el.innerText);
+        if (afterInput && afterInput.includes(text.slice(0, Math.min(12, text.length)))) {
+          insertedViaInput = true;
+        }
+      } catch (e) {}
+
+      if (!insertedViaInput) {
+        try {
+          document.execCommand("insertText", false, text);
+        } catch (e) {
+          el.textContent = text;
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+        }
       }
+    }
+
+    // Final verification: if text still not in editor, force it as last resort
+    await waitFrames(20);
+    const finalCheck = cleanText(el.innerText);
+    if (!finalCheck || !finalCheck.includes(text.slice(0, Math.min(12, text.length)))) {
+      el.textContent = text;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
     }
 
     return true;
@@ -1798,12 +2117,22 @@ function sendMessageSafe(payload, waitMs) {
 // ═══════════════════════════════════════════════════════════════
 loadSettings();
 
-if (document.body) {
+function bootComposerWatcher() {
+  if (!document.body) return;
   observer.observe(document.body, { childList: true, subtree: true });
   insertButtonIntoReplyBoxes();
+  window.addEventListener("scroll", repositionMountedGroups, true);
+  window.addEventListener("resize", repositionMountedGroups);
+  setInterval(() => {
+    if (!isInsertingText) {
+      insertButtonIntoReplyBoxes();
+      repositionMountedGroups();
+    }
+  }, 700);
+}
+
+if (document.body) {
+  bootComposerWatcher();
 } else {
-  window.addEventListener("DOMContentLoaded", () => {
-    observer.observe(document.body, { childList: true, subtree: true });
-    insertButtonIntoReplyBoxes();
-  });
+  window.addEventListener("DOMContentLoaded", bootComposerWatcher);
 }
