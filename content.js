@@ -35,6 +35,33 @@ let reconnectObserverTimer = null;
 const boxButtonMap = new WeakMap();
 const mountedGroups = new Set();
 
+// X has shipped multiple composer implementations (Draft.js + newer editors).
+// Match any of them instead of a single testid prefix.
+const COMPOSER_SELECTOR = [
+  'div[contenteditable="true"][data-testid^="tweetTextarea"]',
+  'div[contenteditable="true"][role="textbox"][data-testid*="tweetTextarea"]',
+  'div[contenteditable="plaintext-only"][role="textbox"]',
+  'div[contenteditable="true"][role="textbox"][aria-label]',
+  'div[contenteditable="true"][data-lexical-editor="true"]',
+].join(", ");
+
+function isComposerBox(el) {
+  if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
+  if (!el.matches?.(COMPOSER_SELECTOR)) return false;
+  if (el.closest?.(".x-ai-reply-group, .x-ai-toast-host")) return false;
+  const testId = el.getAttribute("data-testid") || "";
+  if (/tweetTextarea/i.test(testId)) return true;
+  if (el.getAttribute("data-lexical-editor") === "true") return true;
+  if (el.getAttribute("contenteditable") === "plaintext-only") return true;
+  const label = `${el.getAttribute("aria-label") || ""} ${el.getAttribute("aria-placeholder") || ""}`;
+  return /post|reply|quote|what.?s happening|tweet|balas|kutip/i.test(label);
+}
+
+function queryComposerBoxes(root) {
+  const scope = root && root.querySelectorAll ? root : document;
+  return [...scope.querySelectorAll(COMPOSER_SELECTOR)].filter(isComposerBox);
+}
+
 function hasRelevantDomMutation(mutations) {
   for (let i = 0; i < mutations.length; i++) {
     const m = mutations[i];
@@ -50,9 +77,7 @@ function hasRelevantDomMutation(mutations) {
         continue;
       }
 
-      const activeEditor = target.closest?.(
-        'div[contenteditable="true"][data-testid^="tweetTextarea"]'
-      );
+      const activeEditor = target.closest?.(COMPOSER_SELECTOR);
       if (activeEditor) {
         const existingBtn = boxButtonMap.get(activeEditor);
         if (existingBtn && existingBtn.isConnected) continue;
@@ -121,14 +146,14 @@ function injectStyles() {
     }
 
     .x-ai-reply-group {
-      position: absolute;
-      top: 4px;
-      right: 8px;
-      z-index: 15;
+      position: relative;
+      z-index: 20;
       display: inline-flex;
       align-items: center;
       gap: 5px;
+      margin-left: auto;
       pointer-events: none;
+      flex: 0 0 auto;
     }
 
     .x-ai-angle-bar {
@@ -1008,7 +1033,7 @@ function extractComposerReplyTo(replyBox) {
 }
 
 function extractContextFromDialogNonArticle(dialog, replyBox) {
-  const composerWrap = getMountContainer(replyBox);
+  const composerWrap = replyBox.closest(".DraftEditor-root") || replyBox.parentElement;
   const attachment =
     dialog.querySelector('[data-testid="attachments"]') ||
     dialog.querySelector('[data-testid="quoteTweet"]');
@@ -1166,36 +1191,32 @@ function getPostContext(replyBox) {
 // ═══════════════════════════════════════════════════════════════
 // Mount Container, Quick Angle Mini-Menu & Zero-Reflow Injection
 // ═══════════════════════════════════════════════════════════════
-function getMountContainer(box) {
+function getToolbarMount(box) {
   if (!box) return null;
-  const draftRoot = box.closest(".DraftEditor-root");
-  if (draftRoot && draftRoot.parentElement) {
-    return draftRoot.parentElement;
+  const dialog = box.closest('[role="dialog"]');
+  const cell = box.closest('[data-testid="cellInnerDiv"]');
+  const scopes = [dialog, cell, box.parentElement].filter(Boolean);
+
+  for (const scope of scopes) {
+    const toolbars = [...scope.querySelectorAll('[data-testid="toolBar"]')];
+    const toolbar = toolbars.find((bar) => !bar.contains(box)) || toolbars[0];
+    if (toolbar) return toolbar;
   }
+
+  const draftRoot = box.closest(".DraftEditor-root");
+  if (draftRoot && draftRoot.parentElement) return draftRoot.parentElement;
   return box.parentElement;
 }
 
-function shouldInjectForBox(box, container) {
+function shouldInjectForBox(box) {
   const dialog = box.closest('[role="dialog"]');
-  if (dialog) {
-    if (
-      dialog.querySelector(
-        'article, [data-testid="tweet"], [data-testid="attachments"], [data-testid="quoteTweet"]'
-      )
-    ) {
-      return true;
-    }
-    const textOutsideComposer = [...dialog.querySelectorAll('[data-testid="tweetText"]')].some(
-      (el) => !container.contains(el)
-    );
-    return textOutsideComposer;
-  }
-
+  if (dialog) return true;
   if (/\/status\/\d+/.test(location.pathname)) return true;
-  if (box.closest("article")) return true;
+  if (/^\/(home|compose\/post|compose\/tweet)?$/.test(location.pathname)) return true;
+  if (box.closest("article, main, [data-testid='primaryColumn']")) return true;
 
   const cell = box.closest('[data-testid="cellInnerDiv"]');
-  if (cell && cell.querySelector('article[data-testid="tweet"]')) return true;
+  if (cell && cell.querySelector('article, [data-testid="tweet"]')) return true;
 
   return false;
 }
@@ -1225,18 +1246,19 @@ function setButtonVisualState(btn, state, langCode = "") {
   }
 }
 
+function composerStillOpen(group) {
+  const scope =
+    group.closest('[role="dialog"]') ||
+    group.closest('[data-testid="cellInnerDiv"]') ||
+    group.closest("main") ||
+    document;
+  return queryComposerBoxes(scope).length > 0;
+}
+
 function cleanupOrphanButtons() {
   for (const group of mountedGroups) {
     const container = group.parentElement;
-    if (!container || !container.isConnected) {
-      group.remove();
-      mountedGroups.delete(group);
-      continue;
-    }
-    const replyBox = container.querySelector(
-      'div[contenteditable="true"][data-testid^="tweetTextarea"]'
-    );
-    if (!replyBox) {
+    if (!container || !container.isConnected || !composerStillOpen(group)) {
       group.remove();
       mountedGroups.delete(group);
     }
@@ -1253,9 +1275,7 @@ const QUICK_ANGLES = [
 function insertButtonIntoReplyBoxes() {
   cleanupOrphanButtons();
 
-  const replyBoxes = document.querySelectorAll(
-    'div[contenteditable="true"][data-testid^="tweetTextarea"]'
-  );
+  const replyBoxes = queryComposerBoxes(document);
   if (replyBoxes.length === 0) return;
 
   injectStyles();
@@ -1267,24 +1287,23 @@ function insertButtonIntoReplyBoxes() {
     const existing = boxButtonMap.get(box);
     if (existing && existing.isConnected) continue;
 
-    const container = getMountContainer(box);
-    if (!container) continue;
-    const alreadyBtn = container.querySelector(".x-ai-reply-button");
+    const mount = getToolbarMount(box);
+    if (!mount) continue;
+    const alreadyBtn = mount.querySelector(":scope > .x-ai-reply-group .x-ai-reply-button");
     if (alreadyBtn) {
       boxButtonMap.set(box, alreadyBtn);
       const existingGroup = alreadyBtn.closest(".x-ai-reply-group");
       if (existingGroup) mountedGroups.add(existingGroup);
       continue;
     }
-    if (!shouldInjectForBox(box, container)) continue;
+    if (!shouldInjectForBox(box)) continue;
 
-    const needsRelative = getComputedStyle(container).position === "static";
-    pendingMounts.push({ box, container, needsRelative });
+    pendingMounts.push({ box, mount });
   }
 
   // Phase 2: Batch DOM writes
   for (let i = 0; i < pendingMounts.length; i++) {
-    const { box, container, needsRelative } = pendingMounts[i];
+    const { box, mount } = pendingMounts[i];
 
     const group = document.createElement("div");
     group.className = "x-ai-reply-group";
@@ -1313,7 +1332,7 @@ function insertButtonIntoReplyBoxes() {
         e.stopPropagation();
         if (btn.dataset.loading === "true") return;
         setButtonVisualState(btn, "loading");
-        generateText(box, btn, container, item.id);
+        generateText(box, btn, mount, item.id);
       });
       angleBar.appendChild(pill);
     }
@@ -1327,20 +1346,12 @@ function insertButtonIntoReplyBoxes() {
       e.stopPropagation();
       if (btn.dataset.loading === "true") return;
       setButtonVisualState(btn, "loading");
-      generateText(box, btn, container, "auto");
+      generateText(box, btn, mount, "auto");
     });
-
-    if (needsRelative) {
-      container.style.position = "relative";
-    }
-    if (!box.dataset.xAiPadded) {
-      box.style.paddingRight = "96px";
-      box.dataset.xAiPadded = "true";
-    }
 
     group.appendChild(angleBar);
     group.appendChild(btn);
-    container.appendChild(group);
+    mount.appendChild(group);
 
     boxButtonMap.set(box, btn);
     mountedGroups.add(group);
@@ -1585,9 +1596,7 @@ async function insertTextProperly(el, text, fallbackScope) {
   const resolveLiveBox = () => {
     if (el && document.contains(el)) return el;
     if (fallbackScope && document.contains(fallbackScope)) {
-      return fallbackScope.querySelector(
-        'div[contenteditable="true"][data-testid^="tweetTextarea"]'
-      );
+      return queryComposerBoxes(fallbackScope)[0] || null;
     }
     return null;
   };
@@ -1686,7 +1695,7 @@ function findTargetButtonForShortcut() {
   const activeEl = document.activeElement;
   if (activeEl && typeof activeEl.closest === "function") {
     const focusedEditor = activeEl.closest(
-      'div[contenteditable="true"][data-testid^="tweetTextarea"]'
+      COMPOSER_SELECTOR
     );
     if (focusedEditor) {
       const btn = boxButtonMap.get(focusedEditor);
