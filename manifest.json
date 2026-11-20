@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "X AI Reply",
-  "version": "5.2.1",
+  "version": "5.2.4",
   "description": "Context-locked multilingual AI Reply for X with Vision, Quick Angles, Multi-Profile & Translation Preview.",
   "permissions": ["storage"],
   "options_page": "options.html",
@@ -32,7 +32,7 @@
       "matches": ["https://x.com/*", "https://twitter.com/*", "https://pro.x.com/*"],
       "js": ["content.js"],
       "run_at": "document_start",
-      "all_frames": true
+      "all_frames": false
     }
   ]
 }

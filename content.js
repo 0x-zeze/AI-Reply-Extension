@@ -1,12 +1,12 @@
-// X AI Reply — Content Script (v5.2.1 Global Edition)
+// X AI Reply — Content Script (v5.2.4 Global Edition)
 // GPU-composited "AI Reply" + Quick Angle Mini-Menu, Alt+R Shortcut,
 // Vision Image Extractor, Multi-Layer Context Engine, English Translation Preview,
-// & Anti-Double-Text Draft.js Paste Handler.
+// & Anti-Double-Text Draft.js / Lexical Replace Handler.
 
 const DEFAULT_BASE_URL = "https://api.x.ai/v1";
 const DEFAULT_MODEL = "grok-4.6-high";
 const DEFAULT_PROMPT =
-  "all lowercase, under 10 words, dry and effortless, sound like a real person typing from phone, no emojis";
+  "super casual and chill, like texting a friend on X, short punchy natural slang when it fits, never sound like an AI or analyst, no emojis";
 
 const settingsCache = {
   baseUrl: DEFAULT_BASE_URL,
@@ -20,8 +20,9 @@ const settingsCache = {
 };
 let settingsLoaded = false;
 
-// Rate limiting — minimum 2.5s between completed requests
+// Rate limiting & global in-flight lock — minimum 2.5s between requests
 let lastRequestTime = 0;
+let isGenerating = false;
 const MIN_REQUEST_INTERVAL_MS = 2500;
 
 // ═══════════════════════════════════════════════════════════════
@@ -45,11 +46,23 @@ const COMPOSER_SELECTOR = [
   'div[contenteditable="true"][data-lexical-editor="true"]',
 ].join(", ");
 
+function isDmOrNonReplySurface(el) {
+  if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
+  if (/^\/messages(\/|$)/i.test(location.pathname)) return true;
+  if (
+    el.closest?.(
+      '.x-ai-reply-group, .x-ai-toast-host, [role="search"], [data-testid="SearchBox_Search_Input"], [data-testid="DMDrawer"], [data-testid^="dmComposer"], [data-testid="DM_Conversation"]'
+    )
+  ) {
+    return true;
+  }
+  const testId = el.getAttribute("data-testid") || "";
+  return /^dmComposer/i.test(testId);
+}
+
 function isComposerBox(el) {
   if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
-  if (el.closest?.(".x-ai-reply-group, .x-ai-toast-host, [role='search'], [data-testid='SearchBox_Search_Input']")) {
-    return false;
-  }
+  if (isDmOrNonReplySurface(el) || isGrokSurface(el)) return false;
 
   const editable =
     el.matches?.(COMPOSER_SELECTOR) ||
@@ -101,6 +114,7 @@ function isGrokSurface(el) {
 }
 
 function findComposerFromPlaceholder(root) {
+  if (/^\/messages(\/|$)|\/i\/grok|\/grok/i.test(location.pathname)) return [];
   const scope = root && (root.querySelectorAll || root instanceof ShadowRoot) ? root : document;
   const hints = [];
   const walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT, {
@@ -127,12 +141,12 @@ function findComposerFromPlaceholder(root) {
   const consider = (start) => {
     if (!start) return;
     let node = start;
-    for (let depth = 0; node && depth < 8; depth += 1, node = node.parentElement) {
+    for (let depth = 0; node && depth < 6; depth += 1, node = node.parentElement) {
       const editable = node.querySelector?.(
         '[contenteditable="true"], [contenteditable="plaintext-only"], [role="textbox"]'
       );
       if (!editable || seen.has(editable)) continue;
-      if (editable.closest?.("[role='search'], [data-testid='SearchBox_Search_Input']")) continue;
+      if (isDmOrNonReplySurface(editable) || isGrokSurface(editable)) continue;
       seen.add(editable);
       found.push(editable);
       return;
@@ -145,24 +159,39 @@ function findComposerFromPlaceholder(root) {
 }
 
 function queryComposerBoxes(root) {
+  if (/^\/messages(\/|$)|\/i\/grok|\/grok/i.test(location.pathname)) return [];
   const scope = root && (root.querySelectorAll || root instanceof ShadowRoot) ? root : document;
   const nodes = queryDeep(
     scope,
-    `${COMPOSER_SELECTOR}, [data-testid^="tweetTextarea"] [contenteditable="true"], [data-testid*="tweetTextarea"] [contenteditable], [role="textbox"][contenteditable]`
+    `${COMPOSER_SELECTOR}, [data-testid^="tweetTextarea"] [contenteditable="true"], [data-testid*="tweetTextarea"] [contenteditable]`
   );
   const found = [];
   const seen = new Set();
-  for (const node of [...nodes, ...findComposerFromPlaceholder(scope)]) {
+  for (const node of nodes) {
     if (seen.has(node)) continue;
-    const editable = node.getAttribute("contenteditable");
-    const hinted = editable === "true" || editable === "plaintext-only" || node.getAttribute("role") === "textbox";
-    if (!isComposerBox(node) && !hinted) continue;
-    if (node.closest?.("[role='search'], [data-testid='SearchBox_Search_Input'], .x-ai-reply-group")) continue;
-    if (isGrokSurface(node)) continue;
+    if (!isComposerBox(node)) continue;
     seen.add(node);
     found.push(node);
   }
+  // Only fall back to full TreeWalker scan when standard selectors found nothing
+  if (found.length === 0) {
+    for (const node of findComposerFromPlaceholder(scope)) {
+      if (seen.has(node)) continue;
+      if (isDmOrNonReplySurface(node) || isGrokSurface(node)) continue;
+      seen.add(node);
+      found.push(node);
+    }
+  }
   return found;
+}
+
+function isExtensionNode(node) {
+  if (!node || node.nodeType !== Node.ELEMENT_NODE) return false;
+  return Boolean(
+    node.id === "x-ai-reply-overlay" ||
+      node.id === "x-ai-reply-styles" ||
+      node.matches?.(".x-ai-reply-group, .x-ai-reply-button, .x-ai-toast-host, .x-ai-reply-overlay-host")
+  );
 }
 
 function hasRelevantDomMutation(mutations) {
@@ -170,11 +199,29 @@ function hasRelevantDomMutation(mutations) {
     const m = mutations[i];
     if (m.addedNodes.length === 0 && m.removedNodes.length === 0) continue;
 
+    // Ignore mutations that only add/remove our own extension elements
+    let hasExternalNode = false;
+    for (const n of m.addedNodes) {
+      if (!isExtensionNode(n)) {
+        hasExternalNode = true;
+        break;
+      }
+    }
+    if (!hasExternalNode) {
+      for (const n of m.removedNodes) {
+        if (!isExtensionNode(n)) {
+          hasExternalNode = true;
+          break;
+        }
+      }
+    }
+    if (!hasExternalNode) continue;
+
     const target = m.target;
     if (target && target.nodeType === Node.ELEMENT_NODE) {
       if (
         target.closest?.(
-          ".x-ai-reply-group, .x-ai-reply-button, .x-ai-toast-host"
+          ".x-ai-reply-group, .x-ai-reply-button, .x-ai-toast-host, .x-ai-reply-overlay-host, #x-ai-reply-overlay"
         )
       ) {
         continue;
@@ -248,7 +295,8 @@ function injectStyles() {
       to { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
     }
 
-    #x-ai-reply-overlay {
+    #x-ai-reply-overlay,
+    .x-ai-reply-overlay-host {
       position: fixed;
       inset: 0;
       width: 0;
@@ -278,9 +326,9 @@ function injectStyles() {
       margin-bottom: 0;
       padding: 2px 4px;
       border-radius: 999px;
-      background: rgba(15, 20, 25, 0.94);
+      background: rgba(15, 20, 25, 0.95);
       border: 1px solid rgba(255, 255, 255, 0.16);
-      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.32);
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.34);
       opacity: 0;
       transform: translate3d(0, 6px, 0) scale(0.96);
       pointer-events: none;
@@ -288,6 +336,33 @@ function injectStyles() {
       transition:
         opacity 0.16s cubic-bezier(0.22, 1, 0.36, 1),
         transform 0.16s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    /* Invisible hover bridge covering the 7px gap between AI Reply button and angle bar */
+    .x-ai-angle-bar::after {
+      content: "";
+      position: absolute;
+      left: -6px;
+      right: -6px;
+      top: 100%;
+      height: 14px;
+      pointer-events: none;
+    }
+
+    .x-ai-reply-group[data-placement="bottom"] .x-ai-angle-bar {
+      bottom: auto;
+      top: 34px;
+      transform: translate3d(0, -6px, 0) scale(0.96);
+    }
+
+    .x-ai-reply-group[data-placement="bottom"] .x-ai-angle-bar::after {
+      top: auto;
+      bottom: 100%;
+    }
+
+    .x-ai-reply-group[data-align="left"] .x-ai-angle-bar {
+      right: auto;
+      left: 0;
     }
 
     .x-ai-reply-group:hover .x-ai-angle-bar,
@@ -298,7 +373,14 @@ function injectStyles() {
       pointer-events: auto;
     }
 
-    .x-ai-reply-group[data-busy="true"] .x-ai-angle-bar {
+    .x-ai-reply-group:hover .x-ai-angle-bar::after,
+    .x-ai-reply-group:focus-within .x-ai-angle-bar::after,
+    .x-ai-reply-group[data-open="true"] .x-ai-angle-bar::after {
+      pointer-events: auto;
+    }
+
+    .x-ai-reply-group[data-busy="true"] .x-ai-angle-bar,
+    .x-ai-reply-group[data-busy="true"] .x-ai-angle-bar::after {
       opacity: 0 !important;
       pointer-events: none !important;
     }
@@ -1392,48 +1474,174 @@ function getPostContext(replyBox) {
 // ═══════════════════════════════════════════════════════════════
 // Mount Container, Quick Angle Mini-Menu & Zero-Reflow Injection
 // ═══════════════════════════════════════════════════════════════
-function getOverlayHost() {
+let repositionRafId = null;
+
+function getActiveDialogs() {
+  const candidates = document.querySelectorAll('[role="dialog"][aria-modal="true"], dialog[open]');
+  const active = [];
+  for (const el of candidates) {
+    if (!el.isConnected) continue;
+    if (el.closest?.('[data-testid="DMDrawer"], [data-testid="HoverCard"]')) continue;
+    const rect = el.getBoundingClientRect();
+    if (rect.width > 120 && rect.height > 120) {
+      active.push(el);
+    }
+  }
+  return active;
+}
+
+function getOverlayHost(anchor) {
+  // Native <dialog open> renders in the browser Top Layer above body overlays
+  const nativeDialog = anchor?.closest?.("dialog[open]");
+  if (nativeDialog) {
+    let dialogHost = nativeDialog.querySelector(":scope > .x-ai-reply-overlay-host");
+    if (dialogHost && dialogHost.isConnected) return dialogHost;
+    dialogHost = document.createElement("div");
+    dialogHost.className = "x-ai-reply-overlay-host";
+    dialogHost.setAttribute("data-translate", "no");
+    nativeDialog.appendChild(dialogHost);
+    return dialogHost;
+  }
+
   let host = document.getElementById("x-ai-reply-overlay");
   if (host && host.isConnected) return host;
+
   host = document.createElement("div");
   host.id = "x-ai-reply-overlay";
+  host.className = "x-ai-reply-overlay-host";
   host.setAttribute("data-translate", "no");
   (document.body || document.documentElement).appendChild(host);
   return host;
 }
 
-function positionReplyGroup(group, box) {
+function resolveLiveComposerForGroup(group) {
+  if (!group) return null;
+  const currentBox = group.__xAiBox;
+  if (currentBox && currentBox.isConnected) return currentBox;
+  const anchor = group.__xAiAnchor;
+  if (anchor && anchor.isConnected) {
+    const freshBox = findEditorNear(anchor);
+    if (freshBox && freshBox.isConnected) {
+      if (currentBox && currentBox !== freshBox) {
+        boxButtonMap.delete(currentBox);
+      }
+      group.__xAiBox = freshBox;
+      const btn = group.querySelector(".x-ai-reply-button");
+      if (btn) boxButtonMap.set(freshBox, btn);
+      return freshBox;
+    }
+  }
+  return null;
+}
+
+function positionReplyGroup(group, box, openDialogs = null) {
   const anchor = group?.__xAiAnchor && group.__xAiAnchor.isConnected ? group.__xAiAnchor : box;
   if (!group || !anchor || !anchor.isConnected) return;
+
+  const dialogs = openDialogs || getActiveDialogs();
+  if (dialogs.length > 0) {
+    const insideActiveDialog = dialogs.some((d) => d.contains(anchor));
+    if (!insideActiveDialog) {
+      if (group.style.display !== "none") {
+        group.style.display = "none";
+      }
+      delete group.dataset.open;
+      return;
+    }
+  }
+
+  // Ensure group is in the right host (e.g., if dialog became inert or top-layer)
+  const expectedHost = getOverlayHost(anchor);
+  if (group.parentElement !== expectedHost) {
+    expectedHost.appendChild(group);
+  }
+
   const rect = anchor.getBoundingClientRect();
   if (rect.width < 8 || rect.height < 8 || rect.bottom < 0 || rect.top > window.innerHeight) {
-    group.style.display = "none";
+    if (group.style.display !== "none") {
+      group.style.display = "none";
+    }
+    delete group.dataset.open;
     return;
   }
+
+  if (group.style.display !== "inline-flex") {
+    group.style.display = "inline-flex";
+  }
+
   const width = group.offsetWidth || 108;
-  const height = group.offsetHeight || 32;
-  const left = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
-  const top = Math.max(8, rect.top - height - 8);
-  group.style.display = "inline-flex";
-  group.style.left = `${Math.round(left)}px`;
-  group.style.top = `${Math.round(top)}px`;
+  const height = group.offsetHeight || 28;
+  const viewportLeft = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
+  const viewportTop = Math.max(8, rect.top - height - 8);
+
+  // Account for any transformed/top-layer containing block offset
+  const hostRect = expectedHost.getBoundingClientRect();
+  const roundedLeft = Math.round(viewportLeft - hostRect.left);
+  const roundedTop = Math.round(viewportTop - hostRect.top);
+
+  const isInteractive = group.dataset.open === "true" || group.matches(":hover");
+  const lastPos = group.__xAiLastPos;
+
+  // Freeze micro-shifts while user is hovering or clicking so click events never cancel
+  if (isInteractive && lastPos) {
+    const dx = Math.abs(roundedLeft - lastPos.left);
+    const dy = Math.abs(roundedTop - lastPos.top);
+    if (dx <= 6 && dy <= 6) {
+      return;
+    }
+  }
+
+  if (!lastPos || lastPos.left !== roundedLeft || lastPos.top !== roundedTop) {
+    group.style.left = `${roundedLeft}px`;
+    group.style.top = `${roundedTop}px`;
+    group.__xAiLastPos = { left: roundedLeft, top: roundedTop };
+  }
+
+  if (!isInteractive) {
+    // Flip angle bar below button if too close to top of viewport
+    const nextPlacement = viewportTop < 52 ? "bottom" : "top";
+    if (group.dataset.placement !== nextPlacement) {
+      group.dataset.placement = nextPlacement;
+    }
+    // Align angle bar to left edge if too close to left of viewport
+    const nextAlign = viewportLeft + width < 270 ? "left" : "right";
+    if (group.dataset.align !== nextAlign) {
+      group.dataset.align = nextAlign;
+    }
+  }
 }
 
 function repositionMountedGroups() {
+  if (mountedGroups.size === 0) return;
+  const openDialogs = getActiveDialogs();
   for (const group of mountedGroups) {
     if (!group.isConnected) continue;
-    const box = group.__xAiBox;
-    if (!box || !box.isConnected) continue;
-    positionReplyGroup(group, box);
+    const liveBox = resolveLiveComposerForGroup(group);
+    const anchor = group.__xAiAnchor;
+    if (!anchor || !anchor.isConnected) continue;
+    positionReplyGroup(group, liveBox || anchor, openDialogs);
+  }
+}
+
+function scheduleReposition() {
+  if (repositionRafId) return;
+  if (typeof requestAnimationFrame === "function") {
+    repositionRafId = requestAnimationFrame(() => {
+      repositionRafId = null;
+      if (!isInsertingText) repositionMountedGroups();
+    });
+  } else {
+    repositionMountedGroups();
   }
 }
 
 function shouldInjectForBox(box) {
   if (!box || !box.isConnected) return false;
+  if (isDmOrNonReplySurface(box) || isGrokSurface(box)) return false;
+  if (!isComposerBox(box)) return false;
   const label = `${box.getAttribute("aria-label") || ""} ${box.getAttribute("data-placeholder") || ""} ${box.textContent || ""}`;
-  if (isGrokSurface(box)) return false;
   if (/post your reply|reply|quote|what.?s happening/i.test(label)) return true;
-  if (box.closest('[role="dialog"], article, main, [data-testid="primaryColumn"], [data-testid="cellInnerDiv"]')) {
+  if (box.closest('[role="dialog"], article, [data-testid="primaryColumn"], [data-testid="cellInnerDiv"]')) {
     return true;
   }
   return /\/status\/\d+|^\/(home|compose\/post|compose\/tweet)?$/.test(location.pathname);
@@ -1471,9 +1679,19 @@ function cleanupOrphanButtons() {
     if (!group.isConnected || !anchor || !anchor.isConnected) {
       group.remove();
       mountedGroups.delete(group);
-      // Clean up WeakMap references to prevent stale entries blocking new button mounts
       if (box) boxButtonMap.delete(box);
       if (anchor) boxButtonMap.delete(anchor);
+      continue;
+    }
+    // If React replaced the editor while keeping the submit button, re-bind the live editor
+    if (!box || !box.isConnected) {
+      const freshBox = resolveLiveComposerForGroup(group);
+      if (!freshBox) {
+        group.remove();
+        mountedGroups.delete(group);
+        if (box) boxButtonMap.delete(box);
+        if (anchor) boxButtonMap.delete(anchor);
+      }
     }
   }
 }
@@ -1487,22 +1705,48 @@ const QUICK_ANGLES = [
 
 function isSubmitButton(el) {
   if (!el || el.nodeType !== 1) return false;
-  if (el.closest?.(".x-ai-reply-group, [role='search']")) return false;
-  if (isGrokSurface(el)) return false;
+  if (
+    isDmOrNonReplySurface(el) ||
+    isGrokSurface(el) ||
+    el.closest?.('nav, [role="navigation"], [role="banner"]')
+  ) {
+    return false;
+  }
   const testId = el.getAttribute("data-testid") || "";
+  if (/SideNav/i.test(testId) || testId === "reply" || /^dmComposer/i.test(testId)) return false;
   if (/tweetButton/i.test(testId)) return true;
-  const label = (el.innerText || el.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim();
+  // Ignore action-bar buttons inside a tweet article unless it's an explicit tweetButton
+  if (el.closest?.('article [role="group"]')) return false;
+  // Use textContent/aria-label instead of innerText to avoid forced layout reflows
+  const label = (el.getAttribute("aria-label") || el.textContent || "").replace(/\s+/g, " ").trim();
   if (!/^(reply|post|quote)$/i.test(label)) return false;
   const rect = el.getBoundingClientRect();
   return rect.width >= 36 && rect.width <= 180 && rect.height >= 24 && rect.height <= 64;
 }
 
 function findReplyActionButtons(root) {
+  if (/^\/messages(\/|$)|\/i\/grok|\/grok/i.test(location.pathname)) return [];
   const scope = root && (root.querySelectorAll || root instanceof ShadowRoot) ? root : document;
-  const nodes = queryDeep(scope, 'button, [role="button"], div[tabindex="0"]');
+
+  // Fast path: match X's explicit tweet/reply submit testids without scanning every button on the page
+  const fastNodes = queryDeep(
+    scope,
+    '[data-testid="tweetButtonInline"], [data-testid="tweetButton"], [data-testid^="tweetButton"]'
+  );
   const hits = [];
   const seen = new Set();
-  for (const node of nodes) {
+  for (const node of fastNodes) {
+    if (!isSubmitButton(node) || seen.has(node)) continue;
+    const nested = node.parentElement?.closest?.("button, [role='button']");
+    if (nested && isSubmitButton(nested)) continue;
+    seen.add(node);
+    hits.push(node);
+  }
+  if (hits.length > 0) return hits;
+
+  // Fallback path only if explicit testids are absent (e.g. future X UI rename)
+  const fallbackNodes = queryDeep(scope, 'button, [role="button"]');
+  for (const node of fallbackNodes) {
     if (!isSubmitButton(node) || seen.has(node)) continue;
     const nested = node.parentElement?.closest?.("button, [role='button']");
     if (nested && isSubmitButton(nested)) continue;
@@ -1514,20 +1758,45 @@ function findReplyActionButtons(root) {
 
 function findEditorNear(anchor) {
   if (!anchor) return null;
-  let node = anchor;
-  for (let depth = 0; node && depth < 10; depth += 1, node = node.parentElement) {
-    const editors = queryComposerBoxes(node);
-    if (editors.length) return editors[0];
+  let node = anchor.parentElement;
+  for (let depth = 0; node && depth < 9; depth += 1, node = node.parentElement) {
+    // Stop climbing before crossing into page-wide containers so we never bind to an unrelated composer
+    const tag = node.tagName;
+    if (
+      tag === "BODY" ||
+      tag === "HTML" ||
+      tag === "MAIN" ||
+      tag === "SECTION" ||
+      node.getAttribute?.("data-testid") === "primaryColumn" ||
+      node.getAttribute?.("role") === "region"
+    ) {
+      break;
+    }
+
+    const direct = node.querySelector?.(
+      `${COMPOSER_SELECTOR}, [data-testid^="tweetTextarea"] [contenteditable="true"], [data-testid*="tweetTextarea"] [contenteditable]`
+    );
+    if (direct && isComposerBox(direct)) return direct;
+
     const editable = node.querySelector?.(
       '[contenteditable="true"], [contenteditable="plaintext-only"], [role="textbox"], textarea'
     );
-    if (editable && !editable.closest?.("[role='search']")) return editable;
+    if (editable && !isDmOrNonReplySurface(editable) && !isGrokSurface(editable)) {
+      if (isComposerBox(editable) || editable.tagName === "TEXTAREA") return editable;
+    }
+
+    // Stop after inspecting the immediate dialog, article, or tweet cell boundary
+    if (
+      tag === "ARTICLE" ||
+      tag === "DIALOG" ||
+      node.getAttribute?.("role") === "dialog" ||
+      node.getAttribute?.("data-testid") === "cellInnerDiv"
+    ) {
+      break;
+    }
   }
-  // Only return anchor if it is itself an editable element, otherwise null
-  const anchorEditable = anchor.getAttribute?.("contenteditable");
-  if (anchorEditable === "true" || anchorEditable === "plaintext-only" || anchor.getAttribute?.("role") === "textbox") {
-    return anchor;
-  }
+  // Only return anchor if it is itself a valid composer element, otherwise null
+  if (isComposerBox(anchor)) return anchor;
   return null;
 }
 
@@ -1557,10 +1826,13 @@ function insertButtonIntoReplyBoxes() {
     seenAnchors.add(key);
     const existing = boxButtonMap.get(key);
     if (existing && existing.isConnected) continue;
-    if (anchor?.parentElement?.querySelector(":scope > .x-ai-reply-group")) continue;
     if (box && !shouldInjectForBox(box) && !anchor) continue;
     pendingMounts.push({ box: box || anchor, anchor });
   }
+
+  if (pendingMounts.length === 0) return;
+
+  const openDialogs = getActiveDialogs();
 
   // Phase 2: Batch DOM writes
   for (let i = 0; i < pendingMounts.length; i++) {
@@ -1580,6 +1852,47 @@ function insertButtonIntoReplyBoxes() {
     btn.setAttribute("data-translate", "no");
     setButtonVisualState(btn, "idle");
 
+    let closeMenuTimer = null;
+    const openAngleMenu = () => {
+      if (closeMenuTimer) {
+        clearTimeout(closeMenuTimer);
+        closeMenuTimer = null;
+      }
+      if (btn.dataset.loading === "true") return;
+      group.dataset.open = "true";
+    };
+    const scheduleCloseAngleMenu = () => {
+      if (closeMenuTimer) clearTimeout(closeMenuTimer);
+      closeMenuTimer = setTimeout(() => {
+        closeMenuTimer = null;
+        delete group.dataset.open;
+      }, 180);
+    };
+
+    const triggerGeneration = (selectedAngle) => {
+      if (closeMenuTimer) {
+        clearTimeout(closeMenuTimer);
+        closeMenuTimer = null;
+      }
+      delete group.dataset.open;
+      if (btn.dataset.loading === "true") return;
+      const liveBox = resolveLiveComposerForGroup(group) || box;
+      if (!liveBox || !liveBox.isConnected) {
+        showToast("Reply editor was refreshed. Please click AI Reply again.", {
+          type: "warn",
+          duration: 3000,
+        });
+        return;
+      }
+      setButtonVisualState(btn, "loading");
+      generateText(liveBox, btn, liveBox.parentElement, selectedAngle);
+    };
+
+    const blockFocusSteal = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    };
+
     for (const item of QUICK_ANGLES) {
       const pill = document.createElement("button");
       pill.type = "button";
@@ -1587,48 +1900,38 @@ function insertButtonIntoReplyBoxes() {
       pill.textContent = item.label;
       pill.title = item.title;
       pill.dataset.angle = item.id;
-      pill.addEventListener("mousedown", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-      });
+      pill.addEventListener("pointerdown", blockFocusSteal);
+      pill.addEventListener("mousedown", blockFocusSteal);
       pill.addEventListener("click", (e) => {
         e.preventDefault();
         e.stopPropagation();
-        delete group.dataset.open;
-        if (btn.dataset.loading === "true") return;
-        setButtonVisualState(btn, "loading");
-        generateText(box, btn, box.parentElement, item.id);
+        triggerGeneration(item.id);
       });
       angleBar.appendChild(pill);
     }
 
-    btn.addEventListener("mousedown", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-    });
-    btn.addEventListener("mouseenter", () => {
-      group.dataset.open = "true";
-    });
-    group.addEventListener("mouseleave", () => {
-      delete group.dataset.open;
-    });
+    btn.addEventListener("pointerdown", blockFocusSteal);
+    btn.addEventListener("mousedown", blockFocusSteal);
+    btn.addEventListener("mouseenter", openAngleMenu);
+    btn.addEventListener("focus", openAngleMenu);
+    angleBar.addEventListener("mouseenter", openAngleMenu);
+    group.addEventListener("mouseenter", openAngleMenu);
+    group.addEventListener("mouseleave", scheduleCloseAngleMenu);
 
     btn.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      if (btn.dataset.loading === "true") return;
-      setButtonVisualState(btn, "loading");
-      generateText(box, btn, box.parentElement, "auto");
+      triggerGeneration("auto");
     });
 
     group.appendChild(angleBar);
     group.appendChild(btn);
     group.__xAiBox = box;
     group.__xAiAnchor = anchor || box;
-    getOverlayHost().appendChild(group);
+    getOverlayHost(anchor || box).appendChild(group);
     group.style.position = "fixed";
     group.style.zIndex = "2147483646";
-    positionReplyGroup(group, box);
+    positionReplyGroup(group, box, openDialogs);
 
     boxButtonMap.set(anchor || box, btn);
     if (box && box !== anchor) boxButtonMap.set(box, btn);
@@ -1710,8 +2013,17 @@ function showForeignTranslationPreview(replyText, langCode, langLabel) {
 
 async function generateText(box, btn, mountContainer, angle = "auto") {
   let succeeded = false;
+  let acquiredLock = false;
 
   try {
+    if (isGenerating) {
+      showToast("Already generating a reply — please wait a moment.", {
+        type: "warn",
+        duration: 2200,
+      });
+      return;
+    }
+
     const now = Date.now();
     if (now - lastRequestTime < MIN_REQUEST_INTERVAL_MS) {
       const waitSec = Math.ceil((MIN_REQUEST_INTERVAL_MS - (now - lastRequestTime)) / 1000);
@@ -1753,19 +2065,11 @@ async function generateText(box, btn, mountContainer, angle = "auto") {
       return;
     }
 
+    isGenerating = true;
+    acquiredLock = true;
+
     const timeoutMs = Math.round(settingsCache.timeout * 1000);
-    const savedAngle =
-      angle && angle !== "auto"
-        ? angle
-        : /\bwitty\b|\bdeadpan\b|\bclever\b/i.test(settingsCache.prompt)
-          ? "witty"
-          : /\bfollow-up\b|\bask a short\b|\bcurious\b|\bcritical take\b/i.test(settingsCache.prompt)
-            ? "ask"
-            : /\bcrypto-native\b|\bcontrarian\b|\bskeptical\b|\bcounter\b/i.test(settingsCache.prompt)
-              ? "counter"
-              : /\bdry\b|\beffortless\b|\bcasual\b/i.test(settingsCache.prompt)
-                ? "agree"
-                : "auto";
+    const selectedAngle = angle && angle !== "auto" ? angle : "auto";
 
     const result = await sendMessageSafe(
       {
@@ -1775,7 +2079,7 @@ async function generateText(box, btn, mountContainer, angle = "auto") {
         model: settingsCache.model,
         systemPrompt: settingsCache.prompt,
         timeoutMs,
-        angle: savedAngle,
+        angle: selectedAngle,
         visionMode: settingsCache.visionMode,
         post,
       },
@@ -1822,12 +2126,19 @@ async function generateText(box, btn, mountContainer, angle = "auto") {
       throw new Error("Model returned an empty response.");
     }
 
-    const inserted = await insertTextProperly(box, replyText, mountContainer);
-    if (!inserted) {
+    const insertResult = await insertTextProperly(box, replyText, mountContainer);
+    if (!insertResult || !insertResult.ok) {
       showToast("The reply box was closed before generation completed.", {
         type: "warn",
       });
       return;
+    }
+
+    if (insertResult.method === "clipboard") {
+      showToast("Reply copied to clipboard — press Ctrl+V in the reply box to paste.", {
+        type: "info",
+        duration: 6000,
+      });
     }
 
     succeeded = true;
@@ -1864,6 +2175,9 @@ async function generateText(box, btn, mountContainer, angle = "auto") {
       showToast(msg, { type: "error", duration: 5500 });
     }
   } finally {
+    if (acquiredLock) {
+      isGenerating = false;
+    }
     if (!succeeded) {
       setButtonVisualState(btn, "idle");
     }
@@ -1871,7 +2185,7 @@ async function generateText(box, btn, mountContainer, angle = "auto") {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// insertTextProperly — Ghost-Free Draft.js Paste Handler
+// insertTextProperly — Ghost-Free Draft.js / Lexical Replace Handler
 // ═══════════════════════════════════════════════════════════════
 function waitFrames(ms = 24) {
   return new Promise((resolve) => {
@@ -1881,6 +2195,150 @@ function waitFrames(ms = 24) {
       setTimeout(resolve, ms);
     }
   });
+}
+
+function getEditorText(el) {
+  if (!el) return "";
+  if (el.tagName === "TEXTAREA" || el.tagName === "INPUT") {
+    return cleanText(el.value);
+  }
+  return cleanText(String(el.innerText || "").replace(/[\u200B-\u200D\uFEFF]/g, ""));
+}
+
+function selectAllInEditor(el) {
+  if (!el) return;
+  if (el.tagName === "TEXTAREA" || el.tagName === "INPUT") {
+    el.focus();
+    el.select();
+    return;
+  }
+  try {
+    const sel = window.getSelection();
+    if (sel) {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      sel.removeAllRanges();
+      sel.addRange(range);
+      document.dispatchEvent(new Event("selectionchange"));
+    }
+  } catch (e) {}
+  try {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed) {
+      document.execCommand("selectAll", false, null);
+    }
+  } catch (e) {}
+}
+
+async function clearEditorContent(el) {
+  if (getEditorText(el).length === 0) return true;
+
+  // Attempt 1: Explicit Range selection + beforeinput(deleteContentBackward) (Lexical / modern Draft.js)
+  selectAllInEditor(el);
+  await waitFrames(28);
+  try {
+    el.dispatchEvent(
+      new InputEvent("beforeinput", {
+        inputType: "deleteContentBackward",
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+      })
+    );
+  } catch (e) {}
+  await waitFrames(28);
+  if (getEditorText(el).length === 0) return true;
+
+  // Attempt 2: Explicit Range selection + execCommand("delete")
+  selectAllInEditor(el);
+  await waitFrames(24);
+  try {
+    document.execCommand("delete", false, null);
+  } catch (e) {}
+  await waitFrames(28);
+  if (getEditorText(el).length === 0) return true;
+
+  // Attempt 3: Explicit Range selection + Backspace key event + delete
+  selectAllInEditor(el);
+  await waitFrames(24);
+  try {
+    el.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Backspace",
+        code: "Backspace",
+        keyCode: 8,
+        which: 8,
+        bubbles: true,
+        cancelable: true,
+      })
+    );
+    document.execCommand("delete", false, null);
+    el.dispatchEvent(
+      new KeyboardEvent("keyup", {
+        key: "Backspace",
+        code: "Backspace",
+        keyCode: 8,
+        which: 8,
+        bubbles: true,
+      })
+    );
+  } catch (e) {}
+  await waitFrames(28);
+  if (getEditorText(el).length === 0) return true;
+
+  // Attempt 4: Leave entire editor content selected so paste/insert replaces it instead of appending
+  selectAllInEditor(el);
+  await waitFrames(24);
+  return false;
+}
+
+function dispatchPasteText(el, text) {
+  const dt = new DataTransfer();
+  dt.setData("text/plain", text);
+  const pasteEvent = new ClipboardEvent("paste", {
+    clipboardData: dt,
+    bubbles: true,
+    cancelable: true,
+  });
+  return !el.dispatchEvent(pasteEvent);
+}
+
+function normalizeForCompare(str) {
+  return String(str || "")
+    .replace(/[\u200B-\u200D\uFEFF\s]+/g, "")
+    .toLowerCase();
+}
+
+function editorHasExpectedText(actual, expected) {
+  const normActual = normalizeForCompare(actual);
+  const normExpected = normalizeForCompare(expected);
+  if (!normActual || !normExpected) return false;
+  const sample = normExpected.slice(0, Math.min(10, normExpected.length));
+  return normActual.includes(sample);
+}
+
+async function copyToClipboardFallback(text) {
+  try {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (e) {}
+  try {
+    const tmp = document.createElement("textarea");
+    tmp.value = text;
+    tmp.setAttribute("readonly", "");
+    tmp.style.position = "fixed";
+    tmp.style.opacity = "0";
+    tmp.style.pointerEvents = "none";
+    (document.body || document.documentElement).appendChild(tmp);
+    tmp.select();
+    const ok = document.execCommand("copy");
+    tmp.remove();
+    return Boolean(ok);
+  } catch (e) {
+    return false;
+  }
 }
 
 async function insertTextProperly(el, text, fallbackScope) {
@@ -1893,7 +2351,7 @@ async function insertTextProperly(el, text, fallbackScope) {
   };
 
   el = resolveLiveBox();
-  if (!el) return false;
+  if (!el) return { ok: false, method: "closed" };
 
   isInsertingText = true;
   if (observerDebounceTimer) {
@@ -1911,54 +2369,76 @@ async function insertTextProperly(el, text, fallbackScope) {
   observer.disconnect();
 
   try {
+    // Handle native <textarea> / <input> composers directly
+    if (el.tagName === "TEXTAREA" || el.tagName === "INPUT") {
+      el.focus();
+      const proto =
+        el.tagName === "TEXTAREA"
+          ? window.HTMLTextAreaElement.prototype
+          : window.HTMLInputElement.prototype;
+      const nativeSetter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+      if (nativeSetter) nativeSetter.call(el, text);
+      else el.value = text;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      return { ok: true, method: "inserted" };
+    }
+
     if (document.activeElement !== el) {
       el.focus();
       await waitFrames(35);
       el = resolveLiveBox();
-      if (!el) return false;
+      if (!el) return { ok: false, method: "closed" };
       if (document.activeElement !== el) {
         el.focus();
         await waitFrames(16);
       }
       if (document.activeElement !== el) {
         console.error("[X AI Reply] Could not focus reply editor.");
-        return false;
+        const copied = await copyToClipboardFallback(text);
+        return copied ? { ok: true, method: "clipboard" } : { ok: false, method: "focus_failed" };
       }
     }
 
-    if (cleanText(el.innerText).length > 0) {
-      try {
-        document.execCommand("selectAll", false, null);
-        await waitFrames(24);
-        document.execCommand("delete", false, null);
-        await waitFrames(24);
-      } catch (e) {}
+    const expectedClean = cleanText(text);
+    const prevText = getEditorText(el);
+
+    // Step 1: Clear any existing draft text and verify it's actually removed
+    if (prevText.length > 0) {
+      await clearEditorContent(el);
+      el = resolveLiveBox();
+      if (!el) return { ok: false, method: "closed" };
+      if (document.activeElement !== el) {
+        el.focus();
+        await waitFrames(16);
+      }
+      // If text is still present, keep it fully selected so insertion replaces it
+      if (getEditorText(el).length > 0) {
+        selectAllInEditor(el);
+        await waitFrames(20);
+      }
     }
 
+    // Step 2: Insert via ClipboardEvent paste (preserves Draft.js & Lexical internal state)
     let handledByPaste = false;
     try {
-      const dt = new DataTransfer();
-      dt.setData("text/plain", text);
-      const pasteEvent = new ClipboardEvent("paste", {
-        clipboardData: dt,
-        bubbles: true,
-        cancelable: true,
-      });
-      const notCancelled = el.dispatchEvent(pasteEvent);
-      if (!notCancelled) {
+      const prevented = dispatchPasteText(el, text);
+      await waitFrames(28);
+      const afterPaste = getEditorText(el);
+      if (prevented || editorHasExpectedText(afterPaste, expectedClean)) {
         handledByPaste = true;
-      } else {
-        await waitFrames(20);
-        const current = cleanText(el.innerText);
-        if (current && current.includes(text.slice(0, Math.min(12, text.length)))) {
-          handledByPaste = true;
-        }
       }
     } catch (e) {
       console.warn("[X AI Reply] ClipboardEvent paste failed, trying fallback:", e);
     }
 
     if (!handledByPaste) {
+      // Ensure any leftover text stays selected before fallback insertion
+      if (getEditorText(el).length > 0) {
+        selectAllInEditor(el);
+        await waitFrames(16);
+      }
+
       // Try InputEvent-based insertion first (modern editors including Lexical)
       let insertedViaInput = false;
       try {
@@ -1970,9 +2450,8 @@ async function insertTextProperly(el, text, fallbackScope) {
           composed: true,
         });
         el.dispatchEvent(inputEvent);
-        await waitFrames(20);
-        const afterInput = cleanText(el.innerText);
-        if (afterInput && afterInput.includes(text.slice(0, Math.min(12, text.length)))) {
+        await waitFrames(24);
+        if (editorHasExpectedText(getEditorText(el), expectedClean)) {
           insertedViaInput = true;
         }
       } catch (e) {}
@@ -1980,22 +2459,51 @@ async function insertTextProperly(el, text, fallbackScope) {
       if (!insertedViaInput) {
         try {
           document.execCommand("insertText", false, text);
-        } catch (e) {
-          el.textContent = text;
-          el.dispatchEvent(new Event("input", { bubbles: true }));
+        } catch (e) {}
+      }
+    }
+
+    // Step 3: Anti-double & safe final verification (never mutate Draft.js/Lexical textContent directly)
+    await waitFrames(28);
+    el = resolveLiveBox();
+    if (!el) return { ok: false, method: "closed" };
+
+    const finalText = getEditorText(el);
+    const normFinal = normalizeForCompare(finalText);
+    const normExpected = normalizeForCompare(expectedClean);
+    const hasConcatenatedOldText =
+      normFinal.length > normExpected.length + 2 && normFinal.includes(normExpected);
+
+    if (hasConcatenatedOldText) {
+      // Old text survived and new text got appended — atomically replace full selection
+      selectAllInEditor(el);
+      await waitFrames(24);
+      let replaced = false;
+      try {
+        document.execCommand("insertText", false, text);
+        await waitFrames(24);
+        if (normalizeForCompare(getEditorText(el)) === normExpected) replaced = true;
+      } catch (e) {}
+
+      if (!replaced) {
+        await clearEditorContent(el);
+        if (getEditorText(el).length === 0) {
+          try {
+            dispatchPasteText(el, text);
+            await waitFrames(24);
+          } catch (e) {}
         }
       }
     }
 
-    // Final verification: if text still not in editor, force it as last resort
-    await waitFrames(20);
-    const finalCheck = cleanText(el.innerText);
-    if (!finalCheck || !finalCheck.includes(text.slice(0, Math.min(12, text.length)))) {
-      el.textContent = text;
-      el.dispatchEvent(new Event("input", { bubbles: true }));
+    const verifiedText = getEditorText(el);
+    if (!editorHasExpectedText(verifiedText, expectedClean)) {
+      // Do NOT set el.textContent directly (breaks Draft.js/Lexical EditorState); copy to clipboard instead
+      const copied = await copyToClipboardFallback(text);
+      return copied ? { ok: true, method: "clipboard" } : { ok: false, method: "insert_failed" };
     }
 
-    return true;
+    return { ok: true, method: "inserted" };
   } finally {
     reconnectObserverTimer = setTimeout(() => {
       reconnectObserverTimer = null;
@@ -2012,27 +2520,47 @@ async function insertTextProperly(el, text, fallbackScope) {
 // ═══════════════════════════════════════════════════════════════
 function findTargetButtonForShortcut() {
   const activeEl = document.activeElement;
-  if (activeEl && typeof activeEl.closest === "function") {
-    const focusedEditor = activeEl.closest(
-      COMPOSER_SELECTOR
-    );
-    if (focusedEditor) {
+  if (activeEl && activeEl.nodeType === Node.ELEMENT_NODE) {
+    const focusedEditor = activeEl.closest?.(COMPOSER_SELECTOR);
+    if (focusedEditor && isComposerBox(focusedEditor)) {
       const btn = boxButtonMap.get(focusedEditor);
       if (btn && btn.isConnected) return btn;
     }
-  }
-
-  const openDialog = document.querySelector?.('[role="dialog"]');
-  if (openDialog) {
-    const dialogBtn = openDialog.querySelector?.(".x-ai-reply-button");
-    if (dialogBtn) return dialogBtn;
-  }
-
-  for (const group of mountedGroups) {
-    if (group.isConnected) {
-      const btn = group.querySelector(".x-ai-reply-button");
-      if (btn) return btn;
+    // Never hijack Alt+R when user is typing inside Search, DM, or any non-composer input
+    if (
+      activeEl.matches?.("input, textarea, select") ||
+      activeEl.isContentEditable ||
+      isDmOrNonReplySurface(activeEl)
+    ) {
+      return null;
     }
+  }
+
+  const openDialogs = getActiveDialogs();
+  if (openDialogs.length > 0) {
+    const topDialog = openDialogs[openDialogs.length - 1];
+    for (const group of mountedGroups) {
+      if (!group.isConnected) continue;
+      const anchor = group.__xAiAnchor;
+      const box = group.__xAiBox;
+      if ((anchor && topDialog.contains(anchor)) || (box && topDialog.contains(box))) {
+        const btn = group.querySelector(".x-ai-reply-button");
+        if (btn && btn.isConnected) return btn;
+      }
+    }
+    return null;
+  }
+
+  // Outside modals, only trigger if a single unambiguous reply button is visible (or on /status/ page)
+  const visibleBtns = [];
+  for (const group of mountedGroups) {
+    if (group.isConnected && group.style.display !== "none") {
+      const btn = group.querySelector(".x-ai-reply-button");
+      if (btn) visibleBtns.push(btn);
+    }
+  }
+  if (visibleBtns.length === 1 || (visibleBtns.length > 0 && /\/status\/\d+/.test(location.pathname))) {
+    return visibleBtns[0];
   }
   return null;
 }
@@ -2121,14 +2649,14 @@ function bootComposerWatcher() {
   if (!document.body) return;
   observer.observe(document.body, { childList: true, subtree: true });
   insertButtonIntoReplyBoxes();
-  window.addEventListener("scroll", repositionMountedGroups, true);
-  window.addEventListener("resize", repositionMountedGroups);
+  window.addEventListener("scroll", scheduleReposition, { capture: true, passive: true });
+  window.addEventListener("resize", scheduleReposition, { passive: true });
   setInterval(() => {
     if (!isInsertingText) {
       insertButtonIntoReplyBoxes();
       repositionMountedGroups();
     }
-  }, 700);
+  }, 1500);
 }
 
 if (document.body) {

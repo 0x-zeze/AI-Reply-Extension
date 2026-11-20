@@ -1,5 +1,5 @@
 // Background Service Worker — CORS-free API proxy for X AI Reply.
-// v5.2.1 Global Edition: Anti-Hallucination Grounding, Guaranteed Multilingual Engine,
+// v5.2.4 Global Edition: Anti-Hallucination Grounding, Guaranteed Multilingual Engine,
 // Vision Multimodal + Auto Text Fallback, Quick Reaction Angles, Anti-Repetition Memory,
 // and Live English Translation Preview for non-English replies.
 
@@ -126,10 +126,11 @@ function buildAntiRepetitionBlock(recentReplies) {
   if (!Array.isArray(recentReplies) || recentReplies.length === 0) return "";
   const lines = recentReplies.slice(-6).map((r) => `- "${r}"`);
   return [
-    "ANTI-REPETITION MEMORY (VARY YOUR SENTENCE SKELETON):",
-    "Your previous recent replies were:",
+    "ANTI-REPETITION MEMORY (KEEP EVERY REPLY FRESH):",
+    "Your recent replies were:",
     ...lines,
-    "Do NOT reuse the same opening words, sentence rhythm, or phrasing structure as any of those lines. Keep your cadence fresh.",
+    "- Do NOT reuse the same opening words, sentence skeleton, or '[X] is good, but [Y]...' pattern as any line above.",
+    "- If replying to the same post again, take a completely different angle and sentence rhythm (e.g. switch between a quick reaction, casual question, or short side observation).",
   ].join("\n");
 }
 
@@ -394,26 +395,34 @@ function detectTickersAndProjects(text) {
   };
 }
 
-function angleFromSavedTone(systemPrompt) {
-  const text = String(systemPrompt || "").toLowerCase();
-  if (!text) return "auto";
-  if (/\bwitty\b|\bdeadpan\b|\bclever\b/.test(text)) return "witty";
-  if (/\bfollow-up\b|\bask a short\b|\bcurious\b|\bcritical take\b/.test(text)) return "ask";
-  if (/\bcrypto-native\b|\bcontrarian\b|\bskeptical\b|\bcounter\b/.test(text)) return "counter";
-  if (/\bdry\b|\beffortless\b|\bcasual\b/.test(text)) return "agree";
-  return "auto";
+const LEGACY_PROMPT_UPGRADES = {
+  "all lowercase, under 10 words, dry and effortless, sound like a real person typing from phone, no emojis":
+    "super casual and chill, like texting a friend on X, short punchy natural slang when it fits, never sound like an AI or analyst, no emojis",
+  "super casual and chill, like texting a friend on X, short punchy lowercase, natural slang ok when it fits (tbh/ngl/lowkey/fr), never sound like an AI or analyst, no emojis":
+    "super casual and chill, like texting a friend on X, short punchy natural slang when it fits, never sound like an AI or analyst, no emojis",
+  "clever, witty one-liner, sharp observation, casual lowercase, zero clichés, under 12 words":
+    "playful casual humor, clever quick quip or light sarcasm, effortless lowercase, relatable and funny without trying too hard, no emojis",
+  "crypto-native CT vibe, grounded take on the thesis or chart, concise lowercase, under 12 words, no hype emojis":
+    "real CT trader vibe, super casual shorthand, spontaneous take on the chart or narrative like someone in the trenches, lowercase, zero corporate analyst talk, no hype emojis",
+  "curious and thoughtful, ask a short smart follow-up or add one concrete angle, casual lowercase, under 13 words":
+    "genuinely curious and conversational, drop a casual real-talk question or honest gut reaction like a regular X user, lowercase, never preachy or stiff",
+};
+
+function upgradeLegacyStylePrompt(prompt) {
+  const clean = String(prompt || "").trim();
+  return LEGACY_PROMPT_UPGRADES[clean] || clean;
 }
 
 function buildAngleDirective(angle) {
   switch (String(angle || "auto").toLowerCase()) {
     case "agree":
-      return "SELECTED REACTION ANGLE — AGREE / CO-SIGN: Back up the author's core point by adding one concrete, grounded reason why it makes sense (without cliché 'totally agree' fluff).";
+      return "VIBE FOR THIS REPLY — CASUAL CO-SIGN: Back up the author's point naturally like a friend nodding along on X, using native everyday phrasing in the target language. Zero corporate praise or stiff agreement clichés.";
     case "ask":
-      return "SELECTED REACTION ANGLE — CURIOUS FOLLOW-UP QUESTION: Ask 1 sharp, genuinely curious short question directly about a specific detail in the post (a question mark '?' IS allowed at the end for this angle).";
+      return "VIBE FOR THIS REPLY — CASUAL QUESTION: Ask 1 quick, genuinely curious question about a specific detail in the post, phrased the way native speakers actually ask on X. A '?' at the end is totally fine.";
     case "counter":
-      return "SELECTED REACTION ANGLE — SKEPTICAL / CONTRARIAN NUANCE: Point out 1 calm, smart caveat, risk, or counter-angle to the post's claim without being rude or hostile.";
+      return "VIBE FOR THIS REPLY — CHILL SKEPTICISM: Push back lightly or point out one real-world catch/risk in a relaxed, conversational way in the target language. NEVER use stiff essay contrast templates like 'X sounds nice, but Y matters most'.";
     case "witty":
-      return "SELECTED REACTION ANGLE — DRY / WITTY QUIP: Drop a clever, deadpan, effortless observation or light humor grounded directly in the post's situation.";
+      return "VIBE FOR THIS REPLY — EFFORTLESS WIT: Drop a quick, relatable joke, dry quip, or light playful roast directly about the situation in the post. Keep it punchy, native, and unforced.";
     default:
       return "";
   }
@@ -443,11 +452,11 @@ function analyzePostIntent(post, angle = "auto") {
   if (!explicitAngle) {
     if (isPoll) {
       cues.push(
-        "INTENT — POLL: Pick one concrete option from the poll or give a sharp reason favoring one choice."
+        "REACTION CUE — POLL: Pick one option casually and drop a quick gut reason why."
       );
     } else if (isQuestion) {
       cues.push(
-        "INTENT — QUESTION: Directly answer the author's question with a specific take instead of making a vague observation."
+        "REACTION CUE — QUESTION: Just answer their question directly and casually like a real person in the replies."
       );
     }
   }
@@ -458,7 +467,7 @@ function analyzePostIntent(post, angle = "auto") {
     );
   if (hasMetrics || p.imageAlt || (Array.isArray(p.imageUrls) && p.imageUrls.length > 0)) {
     cues.push(
-      "GROUNDING — VISUAL/DATA: If chart/screenshot images or numbers are attached, anchor your reaction on a real detail visible in the image or text."
+      "VISUAL/DATA CUE: React naturally to something actually visible in the chart, screenshot, or numbers — like a real user glancing at it on their feed."
     );
   }
 
@@ -466,27 +475,27 @@ function analyzePostIntent(post, angle = "auto") {
     /(\b(?:live on|launching|launched|introducing|announcing|integrated|integration|partnering|partnership|landing on|now available|mainnet|testnet|upgrade|shipped|rollout|going live)\b|(?:上线|推出|集成|合作|主网|公開|連携|ローンチ|출시|통합|메인넷|상장))/i.test(
       full
     );
-  if (isShipOrCollab) {
+  if (isShipOrCollab && !explicitAngle) {
     cues.push(
-      "INTENT — LAUNCH/INTEGRATION: Focus on why this specific ship/integration actually matters in practice (e.g. liquidity, UX, speed, or real usage), not generic hype."
+      "REACTION CUE — LAUNCH/NEWS: Give an authentic off-the-cuff reaction to what actually stands out about this update — skip press-release praise and skip stiff analyst commentary."
     );
   }
 
   if (p.quotedText) {
     cues.push(
-      "STRUCTURE — QUOTE TWEET: Bridge the author's commentary with the quoted post's core point."
+      "CONTEXT CUE — QUOTE TWEET: React naturally to both the author's caption and what they quoted."
     );
   }
 
   if (p.parentContext) {
     cues.push(
-      "STRUCTURE — THREAD/REPLY: Use the Earlier Thread Context for background facts, but reply directly to the TARGET TWEET."
+      "CONTEXT CUE — THREAD: Use the earlier thread for context, and reply directly to TARGET TWEET."
     );
   }
 
   if (cues.length === 0) {
     cues.push(
-      "INTENT — SHARP REACTION: Pick the single most specific claim or detail in the post and react to that exact point."
+      "REACTION CUE — SPONTANEOUS: React casually to the single most interesting, funny, or debatable detail in the post — like a real person scrolling X on their phone."
     );
   }
 
@@ -507,29 +516,25 @@ function buildEntityAnchor(post, detected) {
     hints.push(`tickers: ${detected.tickers.join(", ")}`);
   }
   if (mentionNames.length > 0) {
-    hints.push(`mentioned ecosystems/accounts: ${mentionNames.join(", ")}`);
+    hints.push(`mentioned: ${mentionNames.join(", ")}`);
   }
   if (cleanAuthorName || cleanAuthorHandle) {
     hints.push(
-      `post author: ${[cleanAuthorName, cleanAuthorHandle ? `(@${cleanAuthorHandle})` : ""].filter(Boolean).join(" ")}`
+      `author: ${[cleanAuthorName, cleanAuthorHandle ? `(@${cleanAuthorHandle})` : ""].filter(Boolean).join(" ")}`
     );
   }
 
   if (detected.tickers.length > 0 || mentionNames.length > 0) {
-    const examples = [
-      ...detected.tickers.slice(0, 2),
-      ...mentionNames.slice(0, 2),
-    ];
     return [
-      `ENTITY & TOPIC ANCHOR (${hints.join(" | ")}):`,
-      `- Naturally weave in the relevant ticker or project name (${examples.join(" / ")}${cleanAuthorName ? ` / ${cleanAuthorName}` : ""}) while writing strictly in the target language.`,
-      "- Prefer plain project names or $tickers over raw '@handle' tags.",
+      `TOPIC CONTEXT (${hints.join(" | ")}):`,
+      "- Stay clearly on-topic to this specific post, but do NOT force the ticker or project name into the opening words if it sounds robotic or SEO-like.",
+      "- Avoid raw '@handle' tags unless completely natural.",
     ].join("\n");
   }
 
   return [
-    `ENTITY & TOPIC ANCHOR${hints.length ? ` (${hints.join(" | ")})` : ""}:`,
-    "- Reference the exact subject, protocol, product, or concept discussed in the post so the reply could NOT fit a random unrelated tweet.",
+    `TOPIC CONTEXT${hints.length ? ` (${hints.join(" | ")})` : ""}:`,
+    "- React directly to the specific thing happening in this post so it clearly belongs here, without sounding forced or robotic.",
   ].join("\n");
 }
 
@@ -580,30 +585,26 @@ function formatPostBlock(post) {
   return lines.join("\n");
 }
 
-function buildLanguageAndFormatDirectives(lang, angle = "auto") {
-  const allowQuestionMark = String(angle || "").toLowerCase() === "ask";
-  const punctHintZh = allowQuestionMark
-    ? "NO ending period ('。') or exclamation ('！'); a question mark ('？') is allowed if asking a question."
-    : "NO ending period ('。'), NO exclamation mark ('！'), NO quotes, NO emojis, NO hashtags.";
-  const punctHintJa = allowQuestionMark
-    ? "NO ending period ('。') or exclamation ('！'); '？' is allowed if asking a question."
-    : "NO ending period ('。' なし), NO exclamation mark ('！' なし), NO quotes, NO emojis, NO hashtags.";
-  const punctHintLatin = allowQuestionMark
-    ? "All lowercase. No ending period, no exclamation mark (a '?' is allowed since you are asking a follow-up), no quotation marks, no emojis, no hashtags."
-    : "All lowercase. No ending period, no exclamation mark, no quotation marks, no emojis, no hashtags.";
+function buildLanguageAndFormatDirectives(lang) {
+  const punctHintZh =
+    "NO ending period ('。'), NO exclamation mark ('！'), NO quotes, NO emojis, NO hashtags (a '？' is fine if asking a question).";
+  const punctHintJa =
+    "NO ending period ('。' なし), NO exclamation mark ('！' なし), NO quotes, NO emojis, NO hashtags ('？' is fine if asking).";
+  const punctHintLatin =
+    "All lowercase. No ending period, no exclamation mark, no quotation marks, no emojis, no hashtags (a '?' is totally fine if it's a casual question).";
 
   if (lang.code === "zh-CN") {
     return {
       formatBlock: [
         "MANDATORY LANGUAGE & FORMAT (SIMPLIFIED CHINESE / 简体中文):",
-        "1. Reply 100% in Simplified Chinese (简体中文), 8–26 Chinese characters, 1 single short sentence.",
-        "2. Sound like a real Chinese X/CT user typing casually on mobile (自然口语、接地气、干脆利落，严禁翻译腔和AI客服腔).",
+        "1. Reply 100% in Simplified Chinese (简体中文), 6–24 Chinese characters, 1 short casual line.",
+        "2. Sound like a real Chinese X/CT user scrolling on their phone (口语化、随性自然、有活人感，绝不写翻译腔、点评腔或客服腔).",
         `3. ${punctHintZh}`,
-        "4. Banned clichés: '值得关注', '拭目以待', '完全同意', '说得太对了', '意义重大', '未来可期'.",
+        "4. Banned clichés & stiff patterns: '值得关注', '拭目以待', '完全同意', '说得太对了', '意义重大', '未来可期', '虽然…但更重要的是…'.",
         "5. FORBIDDEN: Do NOT output an English or Indonesian sentence.",
       ].join("\n"),
       userReminder:
-        "请直接用【简体中文】写一句简短自然的推文回复（仅1句话，8-26个汉字左右，自然口语接地气，不要句号和感叹号，严禁使用英文整句回复，只输出回复内容本身）：",
+        "像真人在X上刷手机随手回的一样，用【简体中文】写一句超自然接地气的短回复（6-24字，口语有活人感，别像AI点评，不要句号感叹号，只输出回复）：",
     };
   }
 
@@ -611,14 +612,14 @@ function buildLanguageAndFormatDirectives(lang, angle = "auto") {
     return {
       formatBlock: [
         "MANDATORY LANGUAGE & FORMAT (TRADITIONAL CHINESE / 繁體中文):",
-        "1. Reply 100% in Traditional Chinese (繁體中文), 8–26 Chinese characters, 1 single short sentence.",
-        "2. Sound like a real Taiwan/HK X user typing casually on mobile (自然口語、接地氣、不死板，嚴禁機器翻譯腔與簡體字).",
+        "1. Reply 100% in Traditional Chinese (繁體中文), 6–24 Chinese characters, 1 short casual line.",
+        "2. Sound like a real Taiwan/HK X user typing casually on mobile (自然口語、有活人感、不說教不官腔，嚴禁簡體字).",
         `3. ${punctHintZh}`,
-        "4. Banned clichés: '值得關注', '拭目以待', '完全同意', '意義重大', '未來可期'.",
+        "4. Banned clichés: '值得關注', '拭目以待', '完全同意', '意義重大', '未來可期', '雖然…但更重要的是…'.",
         "5. FORBIDDEN: Do NOT output an English or Simplified Chinese sentence.",
       ].join("\n"),
       userReminder:
-        "請直接用【繁體中文】寫一句簡短自然的推文回覆（僅1句話，8-26個漢字左右，自然口語，不要句號和驚嘆號，嚴禁使用英文整句回覆，只輸出回覆內容本身）：",
+        "像真人在X滑手機隨手回的一樣，用【繁體中文】寫一句自然口語的短回覆（6-24字，有活人感，別像AI評論，不要句號驚嘆號，只輸出回覆）：",
     };
   }
 
@@ -626,14 +627,14 @@ function buildLanguageAndFormatDirectives(lang, angle = "auto") {
     return {
       formatBlock: [
         "MANDATORY LANGUAGE & FORMAT (JAPANESE / 日本語):",
-        "1. Reply 100% in natural Japanese (日本語), 12–38 characters, 1 single short sentence.",
-        "2. Sound like an authentic Japanese X user (自然なXの口語・タメ口またはこなれたつぶやき調。直訳調やAIっぽい硬い敬語は厳禁).",
+        "1. Reply 100% in natural Japanese (日本語), 10–35 characters, 1 short casual line.",
+        "2. Sound like a real Japanese X user (Xの自然な口語・タメ口やゆるい独り言感。解説口調やAIっぽい硬い敬語は厳禁).",
         `3. ${punctHintJa}`,
         "4. Banned clichés: '注目ですね', '目が離せない', '完全に同意', '素晴らしい洞察', '今後の展開に期待'.",
         "5. FORBIDDEN: Do NOT reply in English or Chinese.",
       ].join("\n"),
       userReminder:
-        "必ず【自然な日本語】だけで短いリプライを1文（12〜38文字程度、Xの自然な口語、句点「。」や感嘆符なし、英語での返信は厳禁）書いてください。返信本文のみ出力：",
+        "Xをスマホで見ながら思わず返す感じで、【自然な日本語】の短いリプライを1つ書いて（10〜35文字、ゆるい口語、句点や感嘆符なし、英語厳禁）。本文のみ：",
     };
   }
 
@@ -641,14 +642,14 @@ function buildLanguageAndFormatDirectives(lang, angle = "auto") {
     return {
       formatBlock: [
         "MANDATORY LANGUAGE & FORMAT (KOREAN / 한국어):",
-        "1. Reply 100% in natural Korean (한국어), under 10 어절 (~35 characters), 1 single short sentence.",
-        "2. Sound like an authentic Korean X/CT user (자연스러운 트위터/커뮤니티 구어체, 번역투나 딱딱한 로봇 말투 절대 금지).",
-        `3. ${allowQuestionMark ? "NO ending period or exclamation mark ('?' allowed)." : "NO ending period, NO exclamation mark, NO quotes, NO emojis, NO hashtags."}`,
+        "1. Reply 100% in natural Korean (한국어), under 9 어절 (~32 characters), 1 short casual line.",
+        "2. Sound like a real Korean X/CT user (자연스러운 트위터 구어체, 반말/해요체 중 상황에 맞게 편하게, 해설가 말투나 번역투 절대 금지).",
+        "3. NO ending period, NO exclamation mark, NO quotes, NO emojis, NO hashtags ('?' allowed if asking).",
         "4. Banned clichés: '주목할 만하네요', '기대됩니다', '전적으로 동의합니다', '좋은 인사이트', '지켜봐야겠네요'.",
         "5. FORBIDDEN: Do NOT reply in English.",
       ].join("\n"),
       userReminder:
-        "반드시 【자연스러운 한국어】로만 짧은 트위터 답글 한 문장(35자 이내, 자연스러운 커뮤니티 구어체, 마침표/느낌표 없이, 영어 답변 절대 금지)을 작성하세요. 답글 본문만 출력:",
+        "트위터 보다가 폰으로 툭 던지는 느낌으로 【자연스러운 한국어】 짧은 답글 하나만 써줘 (32자 이내, 편한 구어체, 마침표/느낌표 없이, 영어 금지). 본문만:",
     };
   }
 
@@ -656,14 +657,14 @@ function buildLanguageAndFormatDirectives(lang, angle = "auto") {
     return {
       formatBlock: [
         "MANDATORY LANGUAGE & FORMAT (BAHASA INDONESIA):",
-        "1. Reply 100% in natural casual Indonesian (casual everyday mobile phrasing, never stiff machine translation).",
-        "2. Strictly 1 short sentence, under 14 words.",
+        "1. Reply 100% in super casual, natural spoken Indonesian — like an Indonesian X user texting casually on their phone (pakai kata sehari-hari yang luwes seperti 'sih', 'aja', 'udah', 'gak', 'jujur', 'kayaknya', 'tinggal liat', 'bentar' secukupnya bila pas — JANGAN terdengar kaku seperti terjemahan atau artikel).",
+        "2. Strictly 1 short punchy line, 5–13 words. Sentence fragments are totally fine.",
         `3. ${punctHintLatin}`,
-        "4. Banned clichés: 'setuju banget', 'menarik banget', 'patut ditunggu', 'luar biasa', 'mantap jiwa'.",
+        "4. Banned clichés & stiff AI formulas: 'setuju banget', 'menarik banget', 'patut ditunggu', 'luar biasa', 'mantap jiwa', 'yang paling penting adalah', 'lebih dari sekadar'.",
         "5. FORBIDDEN: Do NOT reply in English.",
       ].join("\n"),
       userReminder:
-        "Balas TARGET TWEET di atas 100% dalam 【Bahasa Indonesia】 santai & natural (1 kalimat pendek di bawah 14 kata, huruf kecil semua, tanpa titik di akhir, dilarang keras membalas pakai bahasa Inggris). Tulis isi balasannya saja:",
+        "Balas TARGET TWEET di atas pakai 【Bahasa Indonesia】 yang super santai & ngobrol kayak user X beneran di HP (1 baris pendek 5-13 kata, huruf kecil semua, tanpa titik akhir, jangan kaku kayak artikel/AI, dilarang pakai bahasa Inggris). Tulis balasannya aja:",
     };
   }
 
@@ -671,13 +672,16 @@ function buildLanguageAndFormatDirectives(lang, angle = "auto") {
     return {
       formatBlock: [
         "MANDATORY LANGUAGE & FORMAT (ENGLISH):",
-        "1. Reply 100% in natural English, 1 single short sentence, strictly under 14 words.",
+        "1. Reply 100% in relaxed, everyday spoken English — 1 short punchy line, ideally 5–13 words.",
         `2. ${punctHintLatin}`,
-        "3. Banned AI clichés: 'totally agree', 'spot on', 'interesting take', 'time will tell', 'great insight', 'game changer', 'massive', 'bullish on', 'underrated', 'quietly building', 'isn't just X it's Y', 'let that sink in', 'worth watching'.",
-        "4. Sound like a sharp real person typing effortlessly from their phone. Zero non-English words.",
+        "3. Sound genuinely human & conversational: use natural contractions (that's, don't, won't, feels like, kinda) and casual fragments. Occasional organic X phrasing (ngl, tbh, lowkey, wait, fair, lol, fr) is great ONLY when it fits naturally — never force slang into every reply.",
+        "4. STRICTLY BANNED AI CLICHÉS & FORMULAS:",
+        "   - NEVER use the stiff contrast formula '[X] sounds nice/catchy/clear, but [Y] matters most / still needs more than [Z]'.",
+        "   - NEVER use: 'totally agree', 'spot on', 'interesting take', 'time will tell', 'great insight', 'game changer', 'massive', 'bullish on', 'underrated', 'quietly building', 'isn't just X it's Y', 'let that sink in', 'worth watching', 'matters most', 'more than branding', 'at the end of the day', 'the real test is', 'only time will tell'.",
+        "5. Zero non-English words. Write like a real person scrolling X, not a commentator or PR bot.",
       ].join("\n"),
       userReminder:
-        "Reply to TARGET TWEET 100% in natural 【English】 (1 short sentence under 14 words, all lowercase, no ending period, grounded in the exact topic above, zero non-English words). Output only the reply text:",
+        "Drop 1 super casual, natural 【English】 reply like a real person scrolling X on their phone (5-13 words, all lowercase, no ending period, zero stiff AI 'X is nice, but Y matters most' templates). Output only the reply:",
     };
   }
 
@@ -685,40 +689,47 @@ function buildLanguageAndFormatDirectives(lang, angle = "auto") {
     return {
       formatBlock: [
         `MANDATORY LANGUAGE & FORMAT (${lang.label.toUpperCase()} / ${lang.nativeName}):`,
-        `1. Reply 100% in ${lang.label} (${lang.nativeName}), 1 single short casual sentence (under 14 words).`,
-        `2. Use authentic native ${lang.label} X/internet phrasing — never stiff machine-translated phrasing.`,
-        "3. No ending period, no exclamation mark, no quotation marks, no emojis, no hashtags.",
+        `1. Reply 100% in casual everyday ${lang.label} (${lang.nativeName}), 1 short relaxed line (5–13 words).`,
+        `2. Sound like a real native ${lang.label} user casually replying on X — never stiff, formal, or machine-translated.`,
+        "3. No ending period, no exclamation mark, no quotation marks, no emojis, no hashtags ('?' allowed if asking).",
         "4. FORBIDDEN: Do NOT reply in English.",
       ].join("\n"),
-      userReminder: `Write 1 short human reply to TARGET TWEET strictly in ${lang.label} (${lang.nativeName}) — 1 short casual sentence, no ending period, NEVER reply in English. Output only the reply:`,
+      userReminder: `Write 1 super casual, human reply to TARGET TWEET strictly in native ${lang.label} (${lang.nativeName}) — 1 short relaxed line, no ending period, NEVER reply in English. Output only the reply:`,
     };
   }
 
   return {
     formatBlock: [
       `MANDATORY LANGUAGE & FORMAT (${lang.label.toUpperCase()}):`,
-      `1. Reply strictly in ${lang.label}, 1 single short casual sentence, under 14 words.`,
+      `1. Reply strictly in relaxed, everyday ${lang.label}, 1 short casual line (5–13 words).`,
       `2. ${punctHintLatin}`,
-      "3. Sound like a real native speaker typing casually on mobile. Do NOT switch to English unless the target post itself is English.",
+      "3. Sound like a real native speaker firing off a quick phone reply on X — never formal or essay-like. Do NOT switch to English unless the target post is English.",
     ].join("\n"),
-    userReminder: `Write 1 short human reply to TARGET TWEET strictly in ${lang.label} (1 short sentence under 14 words, all lowercase, no ending period, never switch to English). Output only the reply:`,
+    userReminder: `Write 1 super casual, natural reply to TARGET TWEET strictly in ${lang.label} (5-13 words, all lowercase, no ending period, never switch to English). Output only the reply:`,
   };
 }
 
 function contextLock(lang, post, detected, customStylePrompt, angle, recentReplies) {
-  const resolvedAngle =
-    angle && angle !== "auto" ? angle : angleFromSavedTone(customStylePrompt);
-  const intentBlock = analyzePostIntent(post, resolvedAngle);
+  // Only apply an explicit reaction angle when the user intentionally selected one (agree/ask/counter/witty)
+  const explicitAngle =
+    angle && angle !== "auto" ? String(angle).toLowerCase() : "auto";
+  const intentBlock = analyzePostIntent(post, explicitAngle);
   const entityBlock = buildEntityAnchor(post, detected);
   const memoryBlock = buildAntiRepetitionBlock(recentReplies);
-  const { formatBlock, userReminder } = buildLanguageAndFormatDirectives(lang, angle);
-  const cleanCustomStyle = sanitizeStylePromptForLang(customStylePrompt, lang);
+  const { formatBlock, userReminder } = buildLanguageAndFormatDirectives(lang);
+  const upgradedStyle = upgradeLegacyStylePrompt(customStylePrompt);
+  const cleanCustomStyle = sanitizeStylePromptForLang(upgradedStyle, lang);
 
   const sections = [
+    "HUMAN VOICE & CASUAL ENERGY (MOST IMPORTANT):",
+    "- Write like a real person lazily scrolling X on their phone, dropping an off-the-cuff thought — NOT like an AI, analyst, journalist, or LinkedIn commentator.",
+    "- Keep it loose, conversational, and spontaneous. Short fragments, casual reactions, or quick follow-up questions feel way more real than balanced two-clause essays.",
+    "- Avoid robotic 'X sounds good, but Y actually matters' or 'X is clear, but still needs more than Y' contrast structures.",
+    "",
     "STRICT GROUNDING (ZERO HALLUCINATION):",
-    "- Base your reaction EXCLUSIVELY on facts, claims, numbers, images, and relationships present in TWEET CONTEXT.",
-    "- NEVER invent outside news, fake dates, unmentioned partnerships, or random price targets.",
-    "- Do NOT parrot or rephrase the tweet's exact words back at the author — add a sharp, grounded human angle on it.",
+    "- React ONLY to real facts, numbers, screenshots, or claims visible in TWEET CONTEXT.",
+    "- Never invent outside news, fake dates, unmentioned partnerships, or made-up price targets.",
+    "- Don't summarize or reword the tweet back at the author — just give a real reaction to it.",
     "",
     intentBlock,
     "",
@@ -732,7 +743,7 @@ function contextLock(lang, post, detected, customStylePrompt, angle, recentRepli
   if (cleanCustomStyle) {
     sections.push(
       "",
-      `USER VIBE PREFERENCE (tone/attitude ONLY — NEVER override the mandatory reply language ${lang.label}):`,
+      `USER PERSONA / TONE (follow this vibe closely, NEVER override the mandatory reply language ${lang.label}):`,
       cleanCustomStyle
     );
   }
@@ -1087,7 +1098,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     const systemMessage = {
       role: "system",
       content:
-        "You are a sharp, native-speaking human replying under a post on X. You ALWAYS reply in the exact mandatory target language and write grounded, context-locked one-liners.\n\n" +
+        "You are a chill, real native-speaking human scrolling X on your phone and firing off quick, effortless replies. Always write in the exact mandatory target language, stay grounded in the post, and sound genuinely casual — never flat, stiff, or AI-like.\n\n" +
         systemLock,
     };
 
@@ -1113,7 +1124,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           { role: "user", content: multimodalContent },
         ],
         max_tokens: 1024,
-        temperature: 0.7,
+        temperature: 0.88,
         stream: false,
       },
     });
@@ -1138,7 +1149,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             { role: "user", content: plainUserPrompt },
           ],
           max_tokens: 1024,
-          temperature: 0.7,
+          temperature: 0.88,
           stream: false,
         },
       });

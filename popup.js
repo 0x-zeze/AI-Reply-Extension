@@ -3,7 +3,7 @@ const DEFAULTS = {
   apiKey: "",
   model: "grok-4.6-high",
   prompt:
-    "all lowercase, under 10 words, dry and effortless, sound like a real person typing from phone, no emojis",
+    "super casual and chill, like texting a friend on X, short punchy natural slang when it fits, never sound like an AI or analyst, no emojis",
   timeout: 60,
   visionMode: true,
   translationPreview: true,
@@ -11,6 +11,24 @@ const DEFAULTS = {
   profiles: null,
   activeProfileId: "",
 };
+
+const LEGACY_PROMPT_UPGRADES = {
+  "all lowercase, under 10 words, dry and effortless, sound like a real person typing from phone, no emojis":
+    "super casual and chill, like texting a friend on X, short punchy natural slang when it fits, never sound like an AI or analyst, no emojis",
+  "super casual and chill, like texting a friend on X, short punchy lowercase, natural slang ok when it fits (tbh/ngl/lowkey/fr), never sound like an AI or analyst, no emojis":
+    "super casual and chill, like texting a friend on X, short punchy natural slang when it fits, never sound like an AI or analyst, no emojis",
+  "clever, witty one-liner, sharp observation, casual lowercase, zero clichés, under 12 words":
+    "playful casual humor, clever quick quip or light sarcasm, effortless lowercase, relatable and funny without trying too hard, no emojis",
+  "crypto-native CT vibe, grounded take on the thesis or chart, concise lowercase, under 12 words, no hype emojis":
+    "real CT trader vibe, super casual shorthand, spontaneous take on the chart or narrative like someone in the trenches, lowercase, zero corporate analyst talk, no hype emojis",
+  "curious and thoughtful, ask a short smart follow-up or add one concrete angle, casual lowercase, under 13 words":
+    "genuinely curious and conversational, drop a casual real-talk question or honest gut reaction like a regular X user, lowercase, never preachy or stiff",
+};
+
+function upgradeLegacyPrompt(value) {
+  const clean = String(value || "").trim();
+  return LEGACY_PROMPT_UPGRADES[clean] || value;
+}
 
 let currentConfig = { ...DEFAULTS };
 let profilesList = [];
@@ -212,7 +230,7 @@ function loadPopupData() {
       baseUrl: data.baseUrl || DEFAULTS.baseUrl,
       apiKey: data.apiKey || "",
       model: data.model || DEFAULTS.model,
-      prompt: data.prompt !== undefined ? data.prompt : DEFAULTS.prompt,
+      prompt: data.prompt !== undefined ? upgradeLegacyPrompt(data.prompt) : DEFAULTS.prompt,
       timeout: Number(data.timeout) > 0 ? Number(data.timeout) : DEFAULTS.timeout,
       visionMode: data.visionMode !== false,
       translationPreview: data.translationPreview !== false,
@@ -220,7 +238,10 @@ function loadPopupData() {
     };
 
     if (Array.isArray(data.profiles) && data.profiles.length > 0) {
-      profilesList = data.profiles;
+      profilesList = data.profiles.map((p) => ({
+        ...p,
+        prompt: p.prompt !== undefined ? upgradeLegacyPrompt(p.prompt) : DEFAULTS.prompt,
+      }));
       activeProfileId =
         profilesList.some((p) => p.id === data.activeProfileId)
           ? data.activeProfileId
