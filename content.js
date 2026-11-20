@@ -1,4 +1,4 @@
-// X AI Reply — Content Script (v5.2.4 Global Edition)
+// X AI Reply — Content Script (v5.2.7 Global Edition)
 // GPU-composited "AI Reply" + Quick Angle Mini-Menu, Alt+R Shortcut,
 // Vision Image Extractor, Multi-Layer Context Engine, English Translation Preview,
 // & Anti-Double-Text Draft.js / Lexical Replace Handler.
@@ -911,7 +911,7 @@ function extractArticleLongform(root, excludeScope) {
       : "";
   const body =
     bodyEl && (!excludeScope || !excludeScope.contains(bodyEl))
-      ? truncateAtWord(extractNodeTextWithEmojis(bodyEl), 420)
+      ? truncateAtWord(extractNodeTextWithEmojis(bodyEl), 900)
       : "";
   return { title, body };
 }
@@ -1005,6 +1005,17 @@ function extractImageUrls(root, excludeScope) {
       if (urls.length >= 2) break;
     }
   }
+  if (urls.length === 0) {
+    const videos = root.querySelectorAll("video[poster]");
+    for (const vid of videos) {
+      if (excludeScope && excludeScope.contains(vid)) continue;
+      const poster = normalizeXMediaUrl(vid.getAttribute("poster"));
+      if (poster && !urls.includes(poster)) {
+        urls.push(poster);
+        break;
+      }
+    }
+  }
   return urls;
 }
 
@@ -1038,17 +1049,29 @@ function extractDomLang(primaryNode, root, excludeScope) {
     return code;
   };
 
-  if (primaryNode && typeof primaryNode.getAttribute === "function") {
-    const direct = pickValid(primaryNode.getAttribute("lang"));
+  const readNodeLang = (node) => {
+    if (!node || typeof node.getAttribute !== "function") return "";
+    if (node.tagName === "HTML" || node.tagName === "BODY") return "";
+    const direct = pickValid(node.getAttribute("lang"));
     if (direct) return direct;
-  }
+    const childLang = node.querySelector?.("[lang]");
+    if (childLang && childLang.tagName !== "HTML" && childLang.tagName !== "BODY") {
+      const found = pickValid(childLang.getAttribute("lang"));
+      if (found) return found;
+    }
+    return "";
+  };
+
+  const fromPrimary = readNodeLang(primaryNode);
+  if (fromPrimary) return fromPrimary;
 
   if (root && typeof root.querySelectorAll === "function") {
     const candidates = root.querySelectorAll(
-      '[data-testid="tweetText"][lang], [data-testid="twitterArticleRichTextView"][lang], [data-testid="longformRichTextComponent"][lang]'
+      '[data-testid="tweetText"][lang], [data-testid="tweetText"] [lang], [data-testid="twitterArticleRichTextView"][lang], [data-testid="longformRichTextComponent"][lang]'
     );
     for (const el of candidates) {
       if (excludeScope && excludeScope.contains(el)) continue;
+      if (el.tagName === "HTML" || el.tagName === "BODY") continue;
       const found = pickValid(el.getAttribute("lang"));
       if (found) return found;
     }
@@ -1059,18 +1082,23 @@ function extractDomLang(primaryNode, root, excludeScope) {
 const TRANSLATED_LANG_NAME_MAP = {
   japanese: "ja",
   jepang: "ja",
+  "日本語": "ja",
   chinese: "zh-cn",
   "simplified chinese": "zh-cn",
   "traditional chinese": "zh-tw",
   mandarin: "zh-cn",
   tionghoa: "zh-cn",
   cina: "zh-cn",
+  "中国語": "zh-cn",
   korean: "ko",
   korea: "ko",
+  "韓国語": "ko",
   indonesian: "id",
   indonesia: "id",
+  "インドネシア語": "id",
   english: "en",
   inggris: "en",
+  "英語": "en",
   arabic: "ar",
   arab: "ar",
   russian: "ru",
@@ -1104,35 +1132,69 @@ const TRANSLATED_LANG_NAME_MAP = {
   melayu: "ms",
 };
 
-function extractTranslatedFromLang(root, excludeScope) {
-  if (!root || typeof root.querySelectorAll !== "function") return "";
+function extractTranslationInfo(root, excludeScope) {
+  const result = { translatedFromLang: "", isAutoTranslated: false };
+  if (!root || typeof root.querySelectorAll !== "function") return result;
   const nodes = root.querySelectorAll("span, div, button");
   for (const el of nodes) {
     if (excludeScope && excludeScope.contains(el)) continue;
     if (el.children && el.children.length > 4) continue;
-    const t = cleanText(el.innerText);
-    if (!t || t.length > 90) continue;
+    const t = cleanText(el.textContent || "");
+    if (!t || t.length > 100) continue;
+
+    if (
+      /\b(Show original|Translated by|Auto-translated|Tampilkan yang asli|Diterjemahkan oleh|原文を表示|により翻訳)\b/i.test(
+        t
+      )
+    ) {
+      result.isAutoTranslated = true;
+    }
 
     const m =
       t.match(/\bTranslated from\s+([A-Za-z\s()-]+?)(?:\s+by\b|$)/i) ||
-      t.match(/\bDiterjemahkan dari(?:\s+bahasa)?\s+([A-Za-z\s()-]+?)(?:\s+oleh\b|$)/i);
+      t.match(/\bDiterjemahkan dari(?:\s+bahasa)?\s+([A-Za-z\s()-]+?)(?:\s+oleh\b|$)/i) ||
+      t.match(/([^\s]+?)から翻訳/);
     if (m && m[1]) {
+      result.isAutoTranslated = true;
       const key = m[1].replace(/[()]/g, "").trim().toLowerCase();
-      if (TRANSLATED_LANG_NAME_MAP[key]) return TRANSLATED_LANG_NAME_MAP[key];
+      if (TRANSLATED_LANG_NAME_MAP[key]) {
+        result.translatedFromLang = TRANSLATED_LANG_NAME_MAP[key];
+        return result;
+      }
       const firstWord = key.split(/\s+/)[0];
-      if (TRANSLATED_LANG_NAME_MAP[firstWord]) return TRANSLATED_LANG_NAME_MAP[firstWord];
+      if (TRANSLATED_LANG_NAME_MAP[firstWord]) {
+        result.translatedFromLang = TRANSLATED_LANG_NAME_MAP[firstWord];
+        return result;
+      }
     }
   }
-  return "";
+  return result;
+}
+
+const NON_LATIN_SCRIPT_RE =
+  /[\u3040-\u30ff\uff66-\uff9f\uac00-\ud7af\u1100-\u11ff\u3130-\u318f\u4e00-\u9fff\u3400-\u4dbf\u0400-\u04ff\u0600-\u06ff\u0e00-\u0e7f\u0900-\u097f]/;
+
+function pickPrimaryTweetTextNode(candidates) {
+  if (!Array.isArray(candidates) || candidates.length === 0) return null;
+  if (candidates.length === 1) return candidates[0];
+  // If X renders both original text and an inline translation block, prefer the original (non-Latin or explicit non-en lang)
+  const withNonLatin = candidates.find((n) => NON_LATIN_SCRIPT_RE.test(extractNodeTextWithEmojis(n)));
+  if (withNonLatin) return withNonLatin;
+  const withForeignLang = candidates.find((n) => {
+    const l = String(n.getAttribute?.("lang") || "").trim().toLowerCase();
+    return l && l !== "en" && !/^(und|zxx|qme|qht|qct|qam|art)$/.test(l);
+  });
+  return withForeignLang || candidates[0];
 }
 
 function extractDataFromArticle(article) {
   if (!article) return null;
 
   const quoteRoot = findQuoteContainer(article);
-  const textNodes = [...article.querySelectorAll('[data-testid="tweetText"]')];
-  const mainTextNode =
-    textNodes.find((n) => !quoteRoot || !quoteRoot.contains(n)) || null;
+  const textNodes = [...article.querySelectorAll('[data-testid="tweetText"]')].filter(
+    (n) => !quoteRoot || !quoteRoot.contains(n)
+  );
+  const mainTextNode = pickPrimaryTweetTextNode(textNodes);
 
   let tweetText = extractNodeTextWithEmojis(mainTextNode);
   const longform = extractArticleLongform(article, quoteRoot);
@@ -1143,7 +1205,7 @@ function extractDataFromArticle(article) {
   }
 
   const tweetLang = extractDomLang(mainTextNode, article, quoteRoot);
-  const translatedFromLang = extractTranslatedFromLang(article, quoteRoot);
+  const { translatedFromLang, isAutoTranslated } = extractTranslationInfo(article, quoteRoot);
   const { name, handle } = parseUserBlock(article, quoteRoot);
   const pollOptions = extractPollOptions(article, quoteRoot);
   const cardSummary = extractCardSummary(article, quoteRoot);
@@ -1166,7 +1228,7 @@ function extractDataFromArticle(article) {
         qUser.name || qUser.handle
           ? `${[qUser.name, qUser.handle ? `(${qUser.handle})` : ""].filter(Boolean).join(" ")}: `
           : "";
-      quotedText = truncateAtWord(qPrefix + qBody, 340);
+      quotedText = truncateAtWord(qPrefix + qBody, 520);
     }
     if (imageUrls.length === 0) {
       imageUrls = extractImageUrls(quoteRoot, null);
@@ -1174,6 +1236,8 @@ function extractDataFromArticle(article) {
   }
 
   const replyTo = extractReplyTo(article);
+  const showMoreLink = article.querySelector('[data-testid="tweet-text-show-more-link"]');
+  const isTruncated = Boolean(showMoreLink && (!quoteRoot || !quoteRoot.contains(showMoreLink)));
 
   if (
     !tweetText &&
@@ -1190,9 +1254,11 @@ function extractDataFromArticle(article) {
   return {
     name,
     handle,
-    tweetText: truncateAtWord(tweetText, 650),
+    tweetText: truncateAtWord(tweetText, 1400),
     tweetLang,
     translatedFromLang,
+    isAutoTranslated,
+    isTruncated,
     articleTitle: longform.title,
     pollOptions,
     quotedText,
@@ -1217,7 +1283,7 @@ function buildParentThreadSummary(articlesBeforeTarget) {
     const body = data.tweetText || data.articleTitle || data.cardSummary || data.quotedText;
     if (!body) continue;
     const who = data.handle || data.name || "Author";
-    summaries.push(`${who}: ${truncateAtWord(body, 220)}`);
+    summaries.push(`${who}: ${truncateAtWord(body, 320)}`);
   }
   return summaries.join("\n");
 }
@@ -1231,42 +1297,85 @@ function extractComposerReplyTo(replyBox) {
 }
 
 function extractContextFromDialogNonArticle(dialog, replyBox) {
-  const composerWrap = replyBox.closest(".DraftEditor-root") || replyBox.parentElement;
-  const attachment =
-    dialog.querySelector('[data-testid="attachments"]') ||
-    dialog.querySelector('[data-testid="quoteTweet"]');
+  const composerWrap =
+    replyBox.closest(
+      '[data-testid="tweetTextarea_0RichTextInputContainer"], [data-testid^="tweetTextarea"], .DraftEditor-root'
+    ) || replyBox.parentElement;
 
-  const scope = attachment || dialog;
-  const candidates = [...scope.querySelectorAll('[data-testid="tweetText"]')].filter(
-    (el) => !composerWrap || !composerWrap.contains(el)
+  const quoteRoot =
+    dialog.querySelector('[data-testid="quoteTweet"]') || findQuoteContainer(dialog);
+  const excludeForMain = (el) =>
+    Boolean((composerWrap && composerWrap.contains(el)) || (quoteRoot && quoteRoot.contains(el)));
+
+  const mainCandidates = [...dialog.querySelectorAll('[data-testid="tweetText"]')].filter(
+    (el) => !excludeForMain(el)
   );
-  const targetTextEl = candidates[0] || null;
-  const tweetText = extractNodeTextWithEmojis(targetTextEl);
-  const tweetLang = extractDomLang(targetTextEl, scope, composerWrap);
-  const translatedFromLang = extractTranslatedFromLang(scope, composerWrap);
-  const { name, handle } = parseUserBlock(scope, composerWrap);
-  const pollOptions = extractPollOptions(scope, composerWrap);
-  const cardSummary = extractCardSummary(scope, composerWrap);
-  const imageAlt = extractImageAlt(scope, composerWrap);
-  const imageUrls = extractImageUrls(scope, composerWrap);
+  const targetTextEl = pickPrimaryTweetTextNode(mainCandidates);
 
-  if (!tweetText && !pollOptions && !cardSummary && !imageAlt && imageUrls.length === 0) {
+  // Only fall back to quote/attachment scope if no primary tweetText exists in the dialog
+  const fallbackScope =
+    dialog.querySelector('[data-testid="attachments"]') || quoteRoot || dialog;
+  const effectiveTextEl =
+    targetTextEl ||
+    pickPrimaryTweetTextNode(
+      [...fallbackScope.querySelectorAll('[data-testid="tweetText"]')].filter(
+        (el) => !composerWrap || !composerWrap.contains(el)
+      )
+    );
+
+  const tweetText = extractNodeTextWithEmojis(effectiveTextEl);
+  const tweetLang = extractDomLang(effectiveTextEl, dialog, composerWrap);
+  const { translatedFromLang, isAutoTranslated } = extractTranslationInfo(dialog, composerWrap);
+  const { name, handle } = parseUserBlock(dialog, composerWrap);
+  const pollOptions = extractPollOptions(dialog, composerWrap);
+  const cardSummary = extractCardSummary(dialog, composerWrap);
+  const imageAlt = extractImageAlt(dialog, composerWrap);
+  const imageUrls = extractImageUrls(dialog, composerWrap);
+
+  let quotedText = "";
+  let quotedLang = "";
+  if (quoteRoot && effectiveTextEl && !quoteRoot.contains(effectiveTextEl)) {
+    const qTextNode = quoteRoot.querySelector('[data-testid="tweetText"]');
+    quotedLang = extractDomLang(qTextNode, quoteRoot, null);
+    const qBody =
+      extractNodeTextWithEmojis(qTextNode) ||
+      extractCardSummary(quoteRoot, null) ||
+      extractImageAlt(quoteRoot, null);
+    if (qBody && qBody !== tweetText && qBody.length > 1) {
+      const qUser = parseUserBlock(quoteRoot, null);
+      const qPrefix =
+        qUser.name || qUser.handle
+          ? `${[qUser.name, qUser.handle ? `(${qUser.handle})` : ""].filter(Boolean).join(" ")}: `
+          : "";
+      quotedText = truncateAtWord(qPrefix + qBody, 520);
+    }
+  }
+
+  if (
+    !tweetText &&
+    !pollOptions &&
+    !quotedText &&
+    !cardSummary &&
+    !imageAlt &&
+    imageUrls.length === 0
+  ) {
     return null;
   }
   return {
     name,
     handle,
-    tweetText: truncateAtWord(tweetText, 650),
+    tweetText: truncateAtWord(tweetText, 1400),
     tweetLang,
     translatedFromLang,
+    isAutoTranslated,
     articleTitle: "",
     pollOptions,
-    quotedText: "",
-    quotedLang: "",
+    quotedText,
+    quotedLang,
     cardSummary,
     imageAlt,
     imageUrls,
-    mediaType: detectMediaType(scope, composerWrap, pollOptions, ""),
+    mediaType: detectMediaType(dialog, composerWrap, pollOptions, ""),
     replyTo: extractReplyTo(dialog),
     parentContext: "",
   };
@@ -1279,9 +1388,23 @@ function visibleText(el) {
 
 function looksLikePostBody(text) {
   const value = cleanText(text);
-  if (value.length < 8 || value.length > 1200) return false;
-  if (/^(replying to|membalas|post your reply|what.?s happening|reply|post|quote)$/i.test(value)) return false;
-  if (/^(show more|show this thread|translate post|view|follow)$/i.test(value)) return false;
+  const minLen = NON_LATIN_SCRIPT_RE.test(value) ? 2 : 8;
+  if (value.length < minLen || value.length > 1200) return false;
+  if (
+    /^(replying to|membalas|post your reply|what.?s happening|reply|post|quote|drafts|everyone can reply|who can reply\??)$/i.test(
+      value
+    )
+  ) {
+    return false;
+  }
+  if (
+    /^(show more|show less|show this thread|translate post|show original|translated from\b.*|translated by\b.*|view|views|reposts|quotes|likes|bookmarks|follow|following|subscribe)$/i.test(
+      value
+    )
+  ) {
+    return false;
+  }
+  if (/^\d+(?:[.,]\d+)?[KMBkmb]?$/.test(value)) return false;
   return true;
 }
 
@@ -1290,14 +1413,19 @@ function contextFromVisibleComposer(replyBox) {
   if (!anchor) return null;
   const anchorRect = anchor.getBoundingClientRect();
   const panel =
-    anchor.closest('[role="dialog"]') ||
-    [...document.querySelectorAll('[role="dialog"]')].find((dialog) => {
+    anchor.closest('[role="dialog"], dialog[open]') ||
+    [...document.querySelectorAll('[role="dialog"][aria-modal="true"], dialog[open]')].find((dialog) => {
       const rect = dialog.getBoundingClientRect();
       return rect.left <= anchorRect.right && rect.right >= anchorRect.left && rect.top <= anchorRect.bottom && rect.bottom >= anchorRect.top - 40;
     }) ||
     null;
   const scope = panel || document;
-  const blocks = queryDeep(scope, "article, [data-testid='tweetText'], [data-testid='cellInnerDiv'], div, span");
+  const composerWrap =
+    replyBox.closest?.(
+      '[data-testid="tweetTextarea_0RichTextInputContainer"], [data-testid^="tweetTextarea"], .DraftEditor-root'
+    ) || replyBox;
+
+  const blocks = queryDeep(scope, "[data-testid='tweetText'], article, [data-testid='cellInnerDiv'], div, span");
   let best = "";
   let bestEl = null;
   let bestScore = Infinity;
@@ -1307,14 +1435,34 @@ function contextFromVisibleComposer(replyBox) {
 
   for (const el of blocks) {
     if (!el || el.children?.length > 8) continue;
-    if (el.closest?.(".x-ai-reply-group, .x-ai-toast-host")) continue;
+    if (
+      el.closest?.(
+        '.x-ai-reply-group, .x-ai-toast-host, [data-testid="sidebarColumn"], aside, nav, header, footer'
+      )
+    ) {
+      continue;
+    }
+    if (composerWrap && composerWrap.contains(el)) continue;
     const text = visibleText(el);
     if (!text) continue;
     const rect = el.getBoundingClientRect();
-    if (rect.width < 40 || rect.height < 8 || rect.bottom > anchorRect.top + 30) continue;
+    if (rect.width < 24 || rect.height < 8) continue;
     if (panel && !panel.contains(el)) continue;
-    const dist = anchorRect.top - rect.bottom;
-    if (dist < -20 || dist > 900) continue;
+
+    // Outside modals, only inspect posts above the composer; inside modals also allow quoted tweets below the composer
+    const distAbove = anchorRect.top - rect.bottom;
+    const distBelow = rect.top - anchorRect.bottom;
+    let dist;
+    if (panel) {
+      if (distAbove >= -30 && distAbove <= 900) dist = distAbove;
+      else if (distBelow >= -30 && distBelow <= 600) dist = distBelow + 80;
+      else continue;
+    } else {
+      if (rect.bottom > anchorRect.top + 30) continue;
+      if (distAbove < -20 || distAbove > 900) continue;
+      dist = distAbove;
+    }
+
     if (/^(replying to|membalas)\b/i.test(text) && text.length < 160) {
       replyTo = text;
       handle = (text.match(/@[\w_]+/) || [handle])[0] || handle;
@@ -1326,7 +1474,12 @@ function contextFromVisibleComposer(replyBox) {
       handle = handle || userMatch[2];
     }
     if (!looksLikePostBody(text)) continue;
-    const score = dist + Math.abs(text.length - 140) * 0.15;
+
+    // Strongly prefer explicit tweetText nodes and avoid penalizing compact non-Latin scripts (e.g. Japanese)
+    const isExplicitTweetText = el.getAttribute?.("data-testid") === "tweetText";
+    const isNonLatin = NON_LATIN_SCRIPT_RE.test(text);
+    const lengthPenalty = isNonLatin ? 0 : Math.abs(text.length - 120) * 0.12;
+    const score = dist + lengthPenalty - (isExplicitTweetText ? 300 : 0) - (isNonLatin ? 80 : 0);
     if (score < bestScore) {
       bestScore = score;
       best = text;
@@ -1334,22 +1487,36 @@ function contextFromVisibleComposer(replyBox) {
     }
   }
 
-  if (!best && !replyTo) return null;
-  const langNode = bestEl?.closest?.("[lang]") || bestEl?.querySelector?.("[lang]");
+  const transScope = panel || bestEl?.closest?.("article") || bestEl?.parentElement;
+  const imageAlt = transScope ? extractImageAlt(transScope, composerWrap) : "";
+  const imageUrls = transScope ? extractImageUrls(transScope, composerWrap) : [];
+
+  // Never hallucinate from a bare "Replying to @user" string with no actual post text or media
+  if (!best && !imageAlt && imageUrls.length === 0) return null;
+
+  // Never inherit <html lang="en"> or <body lang="en"> (browser/X UI language) as the post language!
+  const rawLangNode = bestEl?.closest?.("[lang]") || bestEl?.querySelector?.("[lang]");
+  const validLangNode =
+    rawLangNode && rawLangNode.tagName !== "HTML" && rawLangNode.tagName !== "BODY"
+      ? rawLangNode
+      : null;
+  const { translatedFromLang, isAutoTranslated } = extractTranslationInfo(transScope, composerWrap);
+
   return {
     name,
     handle: handle || (replyTo.match(/@[\w_]+/) || [""])[0],
-    tweetText: truncateAtWord(best || replyTo, 650),
-    tweetLang: langNode?.getAttribute?.("lang") || bestEl?.getAttribute?.("lang") || "",
-    translatedFromLang: extractTranslatedFromLang(bestEl?.parentElement || document.body, null),
+    tweetText: truncateAtWord(best, 1400),
+    tweetLang: validLangNode?.getAttribute?.("lang") || "",
+    translatedFromLang,
+    isAutoTranslated,
     articleTitle: "",
     pollOptions: "",
     quotedText: "",
     quotedLang: "",
     cardSummary: "",
-    imageAlt: "",
-    imageUrls: [],
-    mediaType: "",
+    imageAlt,
+    imageUrls,
+    mediaType: transScope ? detectMediaType(transScope, composerWrap, "", "") : "",
     replyTo,
     parentContext: "",
   };
@@ -1362,6 +1529,7 @@ function getPostContext(replyBox) {
     tweetText: "",
     tweetLang: "",
     translatedFromLang: "",
+    isAutoTranslated: false,
     articleTitle: "",
     pollOptions: "",
     quotedText: "",
@@ -1377,10 +1545,10 @@ function getPostContext(replyBox) {
   const composerReplyTo = extractComposerReplyTo(replyBox);
 
   // 1. Modal Dialog (Reply / Quote Tweet / Thread Reply)
-  const dialog = replyBox.closest('[role="dialog"]');
+  const dialog = replyBox.closest('[role="dialog"], dialog[open]');
   if (dialog) {
     const articles = [
-      ...dialog.querySelectorAll('article[data-testid="tweet"], article'),
+      ...dialog.querySelectorAll('article[data-testid="tweet"], article, div[data-testid="tweet"]'),
     ];
     if (articles.length > 0) {
       const boxRect = replyBox.getBoundingClientRect();
@@ -1413,7 +1581,7 @@ function getPostContext(replyBox) {
   }
 
   // 2. Reply box directly inside <article>
-  const ownArticle = replyBox.closest("article");
+  const ownArticle = replyBox.closest('article, div[data-testid="tweet"]');
   if (ownArticle) {
     const extracted = extractDataFromArticle(ownArticle);
     if (extracted) {
@@ -1423,13 +1591,16 @@ function getPostContext(replyBox) {
   }
 
   // 3. Status detail page (/status/<id>) — prioritize the primary focal tweet
-  const allTweets = [...document.querySelectorAll('article[data-testid="tweet"]')];
+  const allTweets = [
+    ...document.querySelectorAll('article[data-testid="tweet"], div[data-testid="tweet"]'),
+  ];
   const statusMatch = location.pathname.match(/\/status\/(\d+)/);
   if (statusMatch) {
     const statusId = statusMatch[1];
     const mainFocalTweet =
       document.querySelector('article[tabindex="-1"]') ||
-      allTweets.find((art) => art.querySelector(`a[href*="/status/${statusId}"]`));
+      allTweets.find((art) => Boolean(art.querySelector(`a[href*="/status/${statusId}"] time`))) ||
+      allTweets.find((art) => Boolean(art.querySelector(`a[href*="/status/${statusId}"]`)));
     if (mainFocalTweet) {
       const extracted = extractDataFromArticle(mainFocalTweet);
       if (extracted) {
@@ -1443,16 +1614,26 @@ function getPostContext(replyBox) {
     }
   }
 
-  // 4. Fallback: nearest tweet above the reply composer
+  // 4. Fallback: nearest tweet directly above the reply composer (strictly bounded within 520px)
   const boxRect = replyBox.getBoundingClientRect();
+  const replyHandleMatch = composerReplyTo.match(/@([A-Za-z0-9_]{1,15})/);
+  const targetHandleLower = replyHandleMatch ? `@${replyHandleMatch[1].toLowerCase()}` : "";
   let bestIdx = -1;
-  let minDistance = Infinity;
+  let bestScore = Infinity;
 
   for (let i = 0; i < allTweets.length; i++) {
     const rect = allTweets[i].getBoundingClientRect();
     const dist = boxRect.top - rect.bottom;
-    if (dist >= -80 && dist < minDistance) {
-      minDistance = dist;
+    if (dist < -80 || dist > 520) continue;
+    let score = Math.max(0, dist);
+    if (targetHandleLower) {
+      const user = parseUserBlock(allTweets[i], findQuoteContainer(allTweets[i]));
+      if (user.handle && user.handle.toLowerCase() === targetHandleLower) {
+        score -= 250;
+      }
+    }
+    if (score < bestScore) {
+      bestScore = score;
       bestIdx = i;
     }
   }
@@ -1466,6 +1647,11 @@ function getPostContext(replyBox) {
       }
       return extracted;
     }
+  }
+
+  // Do not hallucinate a reply from the top-of-feed "What's happening?" new-post composer
+  if (!composerReplyTo && /^\/(home|compose\/post|compose\/tweet)?$/i.test(location.pathname)) {
+    return emptyContext;
   }
 
   return contextFromVisibleComposer(replyBox) || emptyContext;
@@ -2049,18 +2235,27 @@ async function generateText(box, btn, mountContainer, angle = "auto") {
     }
 
     const post = getPostContext(box);
-    const hasContent =
+    const hasReadableText = Boolean(
       post.tweetText ||
-      post.articleTitle ||
-      post.pollOptions ||
-      post.quotedText ||
-      post.cardSummary ||
-      post.imageAlt ||
-      (Array.isArray(post.imageUrls) && post.imageUrls.length > 0);
+        post.articleTitle ||
+        post.pollOptions ||
+        post.quotedText ||
+        post.cardSummary ||
+        post.imageAlt
+    );
+    const hasImages = Array.isArray(post.imageUrls) && post.imageUrls.length > 0;
 
-    if (!hasContent) {
-      showToast("Could not detect post context. Make sure the target post is visible.", {
+    if (!hasReadableText && !hasImages) {
+      showToast("No target post detected. Open a post or reply box so AI can read it first.", {
         type: "warn",
+      });
+      return;
+    }
+
+    if (!hasReadableText && hasImages && !settingsCache.visionMode) {
+      showToast("This post only has an image — enable Vision mode so AI can read it before replying.", {
+        type: "warn",
+        duration: 5500,
       });
       return;
     }
