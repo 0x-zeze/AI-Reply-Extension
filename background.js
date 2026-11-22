@@ -1,5 +1,5 @@
 // Background Service Worker — CORS-free API proxy for X AI Reply.
-// v5.2.7 Global Edition: Anti-Hallucination Grounding, Guaranteed Multilingual Engine,
+// v5.3.0 Global Edition: Deep Post + High-Res Vision Understanding, Anti-Hallucination Grounding,
 // Vision Multimodal + Auto Text Fallback, Quick Reaction Angles, Anti-Repetition Memory,
 // and Live English Translation Preview for non-English replies.
 
@@ -511,9 +511,33 @@ function buildAngleDirective(angle) {
   }
 }
 
+function cleanPrimaryLen(p) {
+  return String(p?.tweetText || p?.articleTitle || "")
+    .replace(/https?:\/\/\S+/gi, "")
+    .trim().length;
+}
+
+function isReportingAboutOthers(post) {
+  const p = post || {};
+  const text = String(p.tweetText || "");
+  if (!text) return false;
+  const authorHandle = String(p.handle || "").replace(/^@/, "").toLowerCase();
+  const mentions = (text.match(/@([A-Za-z0-9_]{1,15})/g) || [])
+    .map((m) => m.slice(1).toLowerCase())
+    .filter((h) => h && h !== authorHandle);
+  const looksLikeNewsLead =
+    /^(?:🔥|🚨|⚡|📢|👀)?\s*(?:breaking|just in|update|alert|new|report|reportedly|速報|快讯|속보)\s*[:：]/i.test(
+      text.trim()
+    ) ||
+    /\b(?:stated|stating|called|announced|contributed|reported|according to|says|said)\b/i.test(text);
+  return looksLikeNewsLead && mentions.length >= 1;
+}
+
 function analyzePostIntent(post, angle = "auto", visionAttached = false) {
   const p = post || {};
-  const primary = [p.articleTitle, p.tweetText, p.pollOptions].filter(Boolean).join(" ");
+  const primary = [p.articleTitle, p.tweetText, p.selfThreadContinuation, p.pollOptions]
+    .filter(Boolean)
+    .join(" ");
   const full = [primary, p.quotedText, p.cardSummary, p.imageAlt, p.parentContext]
     .filter(Boolean)
     .join(" ");
@@ -522,6 +546,12 @@ function analyzePostIntent(post, angle = "auto", visionAttached = false) {
   const explicitAngle = buildAngleDirective(angle);
   if (explicitAngle) {
     cues.push(explicitAngle);
+  }
+
+  if (isReportingAboutOthers(p)) {
+    cues.push(
+      "AUTHOR ROLE — NEWS/REPORTER: The post author is reporting news or quoting other people/projects. React to the actual news, numbers, or claim itself — do NOT congratulate or address the reporter as if they built it."
+    );
   }
 
   const isPoll = Boolean(p.pollOptions);
@@ -548,7 +578,17 @@ function analyzePostIntent(post, angle = "auto", visionAttached = false) {
     /(\b\d+(?:[.,]\d+)?\s*(?:%|x|bps|k|m|b|t|ms|tps)\b|\$\d+(?:[.,]\d+)?\s*(?:k|m|b|t)?\b|\b(?:tvl|ath|volume|revenue|inflow|outflow|apr|apy|fdv|mcap|dau|mau)\b|(?:新高|突破|暴涨|急増|돌파|급등))/i.test(
       full
     );
+  const hasSubstantiveText = cleanPrimaryLen(p) >= 20;
   if (visionAttached) {
+    if (hasSubstantiveText) {
+      cues.push(
+        "TEXT + IMAGE SYNERGY: Read BOTH Post Text and the attached image(s) carefully. If an image is a chart, table, screenshot, or diagram with real data/text, combine that visual detail with the post text. If an image is just a project logo, banner, or decorative graphic, focus primarily on the main news/point in Post Text — NEVER ignore the text to comment solely on a logo shape or graphic design unless the text itself is about design."
+      );
+    } else {
+      cues.push(
+        "IMAGE-PRIMARY POST: The post relies mostly on the attached image(s). Inspect every legible detail in the image(s) — text, numbers, chart movement, meme joke, UI, or scene — and react directly to what is actually shown."
+      );
+    }
     cues.push(
       "VISUAL GROUNDING: Only mention visual details you can CLEARLY see/read in the attached image(s). Never guess blurry numbers or invent off-screen details."
     );
@@ -584,9 +624,15 @@ function analyzePostIntent(post, angle = "auto", visionAttached = false) {
     );
   }
 
+  if (p.selfThreadContinuation) {
+    cues.push(
+      "CONTEXT CUE — SELF-THREAD: The author continued their point right below the main post; use that continuation to understand the full picture."
+    );
+  }
+
   if (p.parentContext) {
     cues.push(
-      "CONTEXT CUE — THREAD: Use Earlier Thread Context only for background accuracy; reply directly to TARGET TWEET."
+      "CONTEXT CUE — THREAD: Use Earlier Thread Context only for background accuracy; reply directly to MAIN POST."
     );
   }
 
@@ -639,6 +685,7 @@ function hasReadableTextContext(post) {
   const p = post || {};
   return Boolean(
     String(p.tweetText || "").trim() ||
+      String(p.selfThreadContinuation || "").trim() ||
       String(p.articleTitle || "").trim() ||
       String(p.pollOptions || "").trim() ||
       String(p.quotedText || "").trim() ||
@@ -647,7 +694,7 @@ function hasReadableTextContext(post) {
   );
 }
 
-function formatPostBlock(post) {
+function formatPostBlock(post, attachedImageCount = 0) {
   const p = post || {};
   const lines = ["=== TWEET CONTEXT ==="];
 
@@ -660,6 +707,9 @@ function formatPostBlock(post) {
   if (p.name || p.handle) {
     lines.push("Author: " + [p.name, p.handle].filter(Boolean).join(" ").trim());
   }
+  if (p.timestamp) {
+    lines.push("Posted: " + p.timestamp);
+  }
   if (p.translatedFromLang) {
     lines.push("Original Untranslated Language of Post: " + p.translatedFromLang);
   } else if (p.tweetLang) {
@@ -671,11 +721,23 @@ function formatPostBlock(post) {
   if (p.mediaType) {
     lines.push("Post Format: " + p.mediaType);
   }
+  if (attachedImageCount > 0) {
+    const mainCnt = Number(p.mainImageCount || 0);
+    const quoteCnt = mainCnt > 0 && attachedImageCount > mainCnt ? attachedImageCount - mainCnt : 0;
+    const imgSummary =
+      quoteCnt > 0
+        ? `${attachedImageCount} image(s) attached below (${mainCnt} from main post, ${quoteCnt} from quoted post)`
+        : `${attachedImageCount} image(s) attached below`;
+    lines.push("Visual Media: " + imgSummary);
+  }
   if (p.articleTitle) {
     lines.push("Article Headline: " + p.articleTitle);
   }
   if (p.tweetText) {
     lines.push("Post Text:\n" + p.tweetText);
+  }
+  if (p.selfThreadContinuation) {
+    lines.push("Author's Immediate Thread Continuation:\n" + p.selfThreadContinuation);
   }
   if (p.isTruncated) {
     lines.push("Note: This post is truncated with 'Show more' — react ONLY to the visible text above and NEVER guess hidden parts.");
@@ -850,12 +912,12 @@ function buildLanguageAndFormatDirectives(lang) {
     return {
       formatBlock: [
         "MANDATORY LANGUAGE & NATURAL STYLE:",
-        "1. Detect the exact language used in TARGET TWEET (including any text inside attached images/screenshots) and reply 100% in THAT exact language — e.g. if it's Japanese reply ONLY in natural Japanese, if Indonesian reply ONLY in casual Indonesian.",
-        "2. Keep it short, loose, and genuinely human (1 quick spontaneous reaction, 4–11 words or 8–26 CJK chars). Never sound like an AI commentator or balanced essay.",
+        "1. Detect the exact language used in MAIN POST (including any text inside attached images/screenshots) and reply 100% in THAT exact language — e.g. if it's Japanese reply ONLY in natural Japanese, if Indonesian reply ONLY in casual Indonesian.",
+        "2. Keep it short, loose, and genuinely human (1 quick spontaneous reaction, 4–11 words or 8–26 CJK chars). For Latin-script languages (like English or Indonesian), use casual all lowercase.",
         "3. No ending period, no exclamation mark, no quotes, no emojis, no hashtags ('?' is fine if asking).",
       ].join("\n"),
       userReminder:
-        "Reply 100% in the EXACT same language as the post (or attached image) — 1 super short, natural human reaction like texting on X, zero AI stiffness. Output only the reply:",
+        "Reply 100% in the EXACT same language as the post (or attached image) — 1 super short, natural human reaction (all lowercase for Latin scripts), zero AI stiffness. Output only the reply:",
     };
   }
 
@@ -1050,20 +1112,81 @@ function buildRewriteMessages(wrongReply, lang, post) {
   ];
 }
 
-function buildUserContentWithVision(textPrompt, imageUrls, visionEnabled) {
-  if (!visionEnabled || !Array.isArray(imageUrls) || imageUrls.length === 0) {
-    return textPrompt;
+const MAX_VISION_IMAGES = 4;
+const MAX_INLINE_IMAGE_BYTES = 3 * 1024 * 1024;
+const IMAGE_FETCH_TIMEOUT_MS = 4500;
+
+function bytesToBase64(bytes) {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode.apply(null, chunk);
   }
+  return btoa(binary);
+}
+
+// Fetch X media directly in the service worker and inline as base64 Data URI
+// so third-party / self-hosted Vision APIs can always see the exact images even if they cannot fetch pbs.twimg.com
+async function fetchImageAsDataUrl(url) {
+  try {
+    const parsed = new URL(url);
+    if (!/(^|\.)twimg\.com$/i.test(parsed.hostname)) {
+      return url;
+    }
+  } catch (e) {
+    return url;
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), IMAGE_FETCH_TIMEOUT_MS);
+  try {
+    const resp = await fetch(url, {
+      method: "GET",
+      signal: controller.signal,
+      cache: "force-cache",
+    });
+    if (!resp.ok) return url;
+    const rawType = String(resp.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+    const mime = /^image\/(jpeg|jpg|png|webp|gif)$/i.test(rawType) ? rawType : "image/jpeg";
+    const buf = await resp.arrayBuffer();
+    if (!buf || buf.byteLength === 0 || buf.byteLength > MAX_INLINE_IMAGE_BYTES) {
+      return url;
+    }
+    const b64 = bytesToBase64(new Uint8Array(buf));
+    return `data:${mime};base64,${b64}`;
+  } catch (e) {
+    return url;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function prepareVisionImagePayloads(imageUrls) {
+  if (!Array.isArray(imageUrls) || imageUrls.length === 0) return [];
   const validUrls = imageUrls
     .filter((u) => typeof u === "string" && /^https?:\/\//i.test(u))
-    .slice(0, 2);
-  if (validUrls.length === 0) return textPrompt;
+    .slice(0, MAX_VISION_IMAGES);
+  if (validUrls.length === 0) return [];
+  return Promise.all(validUrls.map((url) => fetchImageAsDataUrl(url)));
+}
 
+function buildUserContentWithVision(textPrompt, resolvedImages, visionEnabled) {
+  if (!visionEnabled || !Array.isArray(resolvedImages) || resolvedImages.length === 0) {
+    return textPrompt;
+  }
+  const valid = resolvedImages
+    .filter((u) => typeof u === "string" && (/^https?:\/\//i.test(u) || /^data:image\//i.test(u)))
+    .slice(0, MAX_VISION_IMAGES);
+  if (valid.length === 0) return textPrompt;
+
+  // Use "high" detail for 1-2 images so small chart numbers and screenshot text are crystal clear
+  const detailLevel = valid.length <= 2 ? "high" : "auto";
   return [
     { type: "text", text: textPrompt },
-    ...validUrls.map((url) => ({
+    ...valid.map((url) => ({
       type: "image_url",
-      image_url: { url, detail: "auto" },
+      image_url: { url, detail: detailLevel },
     })),
   ];
 }
@@ -1345,6 +1468,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     const entityScanText = [
       post?.articleTitle,
       post?.tweetText,
+      post?.selfThreadContinuation,
       post?.pollOptions,
       post?.quotedText,
       post?.cardSummary,
@@ -1357,11 +1481,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     const detected = detectTickersAndProjects(entityScanText);
 
     const visionEnabled = visionMode !== false;
-    const validVisionUrls =
+    const rawVisionUrls =
       visionEnabled && Array.isArray(post?.imageUrls)
-        ? post.imageUrls.filter((u) => typeof u === "string" && /^https?:\/\//i.test(u)).slice(0, 2)
+        ? post.imageUrls
+            .filter((u) => typeof u === "string" && /^https?:\/\//i.test(u))
+            .slice(0, MAX_VISION_IMAGES)
         : [];
-    const willAttachVision = validVisionUrls.length > 0;
+    const preparedVisionImages =
+      rawVisionUrls.length > 0 ? await prepareVisionImagePayloads(rawVisionUrls) : [];
+    const willAttachVision = preparedVisionImages.length > 0;
 
     const { systemLock, userReminder } = contextLock(
       lang,
@@ -1378,10 +1506,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       content: buildSystemHeader(lang) + "\n\n" + systemLock,
     };
 
-    const plainUserPrompt = formatPostBlock(post) + "\n\n" + userReminder;
+    const plainUserPrompt =
+      formatPostBlock(post, preparedVisionImages.length) + "\n\n" + userReminder;
     const multimodalContent = buildUserContentWithVision(
       plainUserPrompt,
-      validVisionUrls,
+      preparedVisionImages,
       visionEnabled
     );
     const usedVisionPayload = Array.isArray(multimodalContent);

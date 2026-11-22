@@ -5,7 +5,7 @@
 
   <p>
     <img src="https://img.shields.io/badge/Manifest-V3-1d9bf0?style=flat-square" alt="Manifest V3" />
-    <img src="https://img.shields.io/badge/Version-5.2.7-4f46e5?style=flat-square" alt="Version 5.2.7" />
+    <img src="https://img.shields.io/badge/Version-5.3.0-4f46e5?style=flat-square" alt="Version 5.3.0" />
     <img src="https://img.shields.io/badge/Vision-Multimodal_Ready-059669?style=flat-square" alt="Vision Ready" />
     <img src="https://img.shields.io/badge/UI-Auto_Dark%2FLight_60fps-10b981?style=flat-square" alt="60fps UI" />
     <img src="https://img.shields.io/badge/API-OpenAI_Compatible-7c3aed?style=flat-square" alt="OpenAI Compatible" />
@@ -118,7 +118,7 @@
 
 ```text
 AI-Reply-Extension/
-├── manifest.json     # Chrome Extension Manifest V3 configuration (v5.2.7)
+├── manifest.json     # Chrome Extension Manifest V3 configuration (v5.3.0)
 ├── background.js     # Service worker: API proxy, vision fallback, multilingual & anti-repetition engine
 ├── content.js        # X DOM & image extractor, Quick Angle UI, Alt+R shortcut, Draft.js paste handler
 ├── options.html      # Full Settings Dashboard UI (Multi-profile, smart toggles, Auto Dark/Light)
