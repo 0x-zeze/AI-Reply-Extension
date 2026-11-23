@@ -5,7 +5,7 @@
 
   <p>
     <img src="https://img.shields.io/badge/Manifest-V3-1d9bf0?style=flat-square" alt="Manifest V3" />
-    <img src="https://img.shields.io/badge/Version-5.3.1-4f46e5?style=flat-square" alt="Version 5.3.1" />
+    <img src="https://img.shields.io/badge/Version-5.4.0-4f46e5?style=flat-square" alt="Version 5.4.0" />
     <img src="https://img.shields.io/badge/Vision-Multimodal_Ready-059669?style=flat-square" alt="Vision Ready" />
     <img src="https://img.shields.io/badge/UI-Auto_Dark%2FLight_60fps-10b981?style=flat-square" alt="60fps UI" />
     <img src="https://img.shields.io/badge/API-OpenAI_Compatible-7c3aed?style=flat-square" alt="OpenAI Compatible" />
@@ -28,8 +28,9 @@
 
 ### 2. Deep Multi-Layer Post Context Extraction
 - **Target Post Content**: Preserves exact spacing across inline links, `@mentions`, `$cashtags`, `#hashtags`, and emoji `alt` attributes.
-- **Thread & Parent History**: Reads up to 2 preceding posts in a thread or reply modal so comments on follow-up tweets retain full background context.
-- **Quoted Posts, Polls & X Longform Articles**: Separately extracts embedded Quote Tweets (author + body), poll options (`cardPoll`), link preview cards, and X Longform Articles (`twitterArticleRichTextView`).
+- **Thread, Community Notes & Top Replies**: Reads up to 2 preceding parent posts, author self-thread continuations, verified **Community Notes** (`birdwatch-pivot`), external link card domains, and top 2–3 community replies on `/status/` pages to grasp hidden context/sarcasm without copying others.
+- **Quoted Posts, Polls & X Longform Articles**: Separately extracts embedded Quote Tweets (author + body + images), automatically distinguishes **Quote Post** vs **Reply** composers, and reads poll options (`cardPoll`) and X Longform Articles (`twitterArticleRichTextView`).
+- **Smart Regenerate & Guided Draft Seed**: Clicking **AI Reply** (or pressing `Alt + R`) again after a generated reply automatically avoids the previous angle; typing a short rough note in the reply box first turns your own idea into a natural context-locked reply.
 
 ### 3. Hover Quick-Angle Mini-Menu & `Alt + R` Keyboard Shortcut
 - **1-Click Reaction Angles**: Hover over the **✨ AI Reply** button inside any X reply box to slide out quick angle pills:
@@ -44,9 +45,10 @@
 - **Works Even on Translated X Posts**: Even if you clicked *"Translate post"* on X to read a foreign tweet first, the extension detects X's *"Translated from..."* banner and replies in the author's original language.
 - **Live Translation Preview Toast**: Whenever a reply is generated in a foreign script/language (such as Chinese, Japanese, Korean, Arabic, or Russian), a non-blocking toast displays its concise meaning so you can verify what your reply says before posting.
 
-### 5. Anti-Repetition Memory & Zero-Hallucination Grounding
-- **Local Reply Variety Memory**: Stores your last 8 generated replies locally (`chrome.storage.local`) and instructs the model to vary sentence skeletons, openings, and cadence across consecutive replies.
-- **Anti-AI Slop Filter**: Blocks recognizable LLM filler phrases (*"totally agree"*, *"spot on"*, *"game changer"*, *"worth watching"*, *"quietly building"*, *"isn't just X, it's Y"*).
+### 5. Mood & Politeness Adaptation, Silent Read-Then-Reply & Anti-Slop Guard
+- **Mood & Politeness Register Detection**: Automatically adapts tone to sensitive/bad news (suppresses jokes/sarcasm), quick greetings (`gm`/`gn`), memes/shitposts, personal launches, and matches natural politeness levels across **Japanese** (soft keigo vs casual), **Korean** (`해요체` vs `반말`), and **Indonesian** (semi-formal vs casual slang).
+- **Silent Read-Then-Reply + Post-Generation Quality Guard**: Forces the model to identify the post's core point & mood before writing the reply in a single API call, then locally audits the output for wrong language, AI clichés/slop, parroting, unseen video/chart hallucination, and regenerate duplicates — auto-repairing in 1 pass if needed.
+- **Local Reply Variety Memory**: Stores your last 8 generated replies locally (`chrome.storage.local`) and uses dynamic temperature scaling to keep replies fresh and grounded.
 
 ### 6. Multi-Profile API Switcher & Smooth 60/120fps UI
 - **Up to 6 Saved API Profiles**: Save multiple provider/model configurations (for example, an ultra-fast **Groq** profile for quick banter and a **Grok / Claude / OpenRouter** profile for deep chart & thread analysis) and switch between them in 1 click right from the **Toolbar Popup**.
@@ -118,7 +120,7 @@
 
 ```text
 AI-Reply-Extension/
-├── manifest.json     # Chrome Extension Manifest V3 configuration (v5.3.1)
+├── manifest.json     # Chrome Extension Manifest V3 configuration (v5.4.0)
 ├── background.js     # Service worker: API proxy, vision fallback, multilingual & anti-repetition engine
 ├── content.js        # X DOM & image extractor, Quick Angle UI, Alt+R shortcut, Draft.js paste handler
 ├── options.html      # Full Settings Dashboard UI (Multi-profile, smart toggles, Auto Dark/Light)

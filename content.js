@@ -1,7 +1,7 @@
-// X AI Reply — Content Script (v5.3.1 Global Edition)
+// X AI Reply — Content Script (v5.4.0 Global Edition)
 // GPU-composited "AI Reply" + Quick Angle Mini-Menu, Alt+R Shortcut,
-// Vision Image Extractor, Multi-Layer Context Engine, English Translation Preview,
-// & Anti-Double-Text Draft.js / Lexical Replace Handler.
+// Vision Image Extractor, Multi-Layer Context Engine (Community Notes, Top Replies, Quote Mode, Smart Regenerate),
+// English Translation Preview, & Anti-Double-Text Draft.js / Lexical Replace Handler.
 
 const DEFAULT_BASE_URL = "https://api.x.ai/v1";
 const DEFAULT_MODEL = "grok-4.6-high";
@@ -34,6 +34,7 @@ let observerRafId = null;
 let reconnectObserverTimer = null;
 
 const boxButtonMap = new WeakMap();
+const lastGeneratedByBox = new WeakMap();
 const mountedGroups = new Set();
 
 // X has shipped multiple composer implementations (Draft.js + newer editors).
@@ -1017,6 +1018,8 @@ const FALLBACK_BODY_EXCLUDE_SELECTOR = [
   '[data-testid="UserAvatar-Container"]',
   '[data-testid^="card"]',
   '[data-testid="cardPoll"]',
+  '[data-testid="birdwatch-pivot"]',
+  '[data-testid="birdwatch-note"]',
   '[data-testid="sidebarColumn"]',
   '[role="group"]',
   "nav",
@@ -1241,6 +1244,21 @@ function extractArticleLongform(root, excludeScope) {
   return { title, body };
 }
 
+function extractCardDomain(card) {
+  if (!card || typeof card.querySelectorAll !== "function") return "";
+  const links = card.querySelectorAll('a[href^="http"]');
+  for (const a of links) {
+    try {
+      const u = new URL(a.getAttribute("href") || "");
+      const host = u.hostname.replace(/^www\./i, "").toLowerCase();
+      if (host && !/^(x\.com|twitter\.com|t\.co|mobile\.twitter\.com)$/.test(host)) {
+        return host;
+      }
+    } catch (e) {}
+  }
+  return "";
+}
+
 function extractCardSummary(root, excludeScope) {
   const cards = root.querySelectorAll(
     '[data-testid="card.layoutLarge.detail"], [data-testid="card.layoutSmall.detail"], [data-testid="card.wrapper"], [data-testid^="card"]'
@@ -1250,7 +1268,31 @@ function extractCardSummary(root, excludeScope) {
     if (matchesExclude(card, excludeScope)) continue;
     const cardText = extractNodeTextWithEmojis(card);
     if (cardText && cardText.length > 8) {
-      return truncateAtWord(cardText, 340);
+      const domain = extractCardDomain(card);
+      const prefixed =
+        domain && !cardText.toLowerCase().includes(domain)
+          ? `[${domain}] ${cardText}`
+          : cardText;
+      return truncateAtWord(prefixed, 360);
+    }
+  }
+  return "";
+}
+
+function extractCommunityNote(root, excludeScope) {
+  if (!root || typeof root.querySelectorAll !== "function") return "";
+  const notes = root.querySelectorAll('[data-testid="birdwatch-pivot"], [data-testid="birdwatch-note"]');
+  for (const note of notes) {
+    if (matchesExclude(note, excludeScope)) continue;
+    const text = extractNodeTextWithEmojis(note)
+      .replace(
+        /^(?:Readers added context(?: they thought people might want to know)?|Pembaca menambahkan konteks(?: yang mungkin ingin diketahui orang lain)?|読者が背景情報を追加しました|读者添加了背景信息)\s*/i,
+        ""
+      )
+      .replace(/\s*(?:Rate it|Is this helpful\??|Context is written by people who use X).*$/i, "")
+      .trim();
+    if (text && text.length > 12) {
+      return truncateAtWord(text, 360);
     }
   }
   return "";
@@ -1616,6 +1658,7 @@ function extractDataFromArticle(article, extraExcludeScope = null) {
   const { translatedFromLang, isAutoTranslated } = extractTranslationInfo(article, excludeMain);
   const pollOptions = extractPollOptions(article, excludeMain);
   const cardSummary = extractCardSummary(article, excludeMain);
+  const communityNote = extractCommunityNote(article, excludeMain);
   const imageAlt = extractImageAlt(article, excludeMain);
   const mainImageUrls = extractImageUrls(article, excludeMain, 4);
   const imageUrls = [...mainImageUrls];
@@ -1689,13 +1732,16 @@ function extractDataFromArticle(article, extraExcludeScope = null) {
     quotedText,
     quotedLang,
     cardSummary,
+    communityNote,
     imageAlt,
     imageUrls,
     mainImageCount,
     mediaType,
     replyTo,
+    composerMode: "reply",
     parentContext: "",
     selfThreadContinuation: "",
+    topReplies: "",
   };
 }
 
@@ -1718,18 +1764,64 @@ function buildParentThreadSummary(articlesBeforeTarget) {
 function buildSelfThreadContinuation(articlesAfterFocal, authorHandle) {
   const cleanHandle = String(authorHandle || "").trim().toLowerCase();
   if (!cleanHandle || !Array.isArray(articlesAfterFocal) || articlesAfterFocal.length === 0) {
-    return "";
+    return { text: "", consumedCount: 0 };
   }
   const parts = [];
+  let consumedCount = 0;
   for (const art of articlesAfterFocal.slice(0, 3)) {
     const user = parseUserBlock(art, findQuoteContainer(art));
     if (!user.handle || user.handle.toLowerCase() !== cleanHandle) break;
     const data = extractDataFromArticle(art);
     if (!data || !data.tweetText) break;
     parts.push(truncateAtWord(data.tweetText, 320));
+    consumedCount += 1;
     if (parts.length >= 2) break;
   }
-  return parts.join("\n");
+  return { text: parts.join("\n"), consumedCount };
+}
+
+function buildTopRepliesSummary(articlesAfterFocal, authorHandle, skipCount = 0) {
+  if (!Array.isArray(articlesAfterFocal) || articlesAfterFocal.length <= skipCount) return "";
+  const cleanAuthor = String(authorHandle || "").trim().toLowerCase();
+  const replies = [];
+  const seenHandles = new Set();
+
+  for (const art of articlesAfterFocal.slice(skipCount, skipCount + 8)) {
+    if (!art || art.querySelector?.('[data-testid="placementTracking"]')) continue;
+    const data = extractDataFromArticle(art);
+    if (!data || !data.tweetText) continue;
+    const h = String(data.handle || "").trim().toLowerCase();
+    if (cleanAuthor && h === cleanAuthor) continue;
+    if (h && seenHandles.has(h)) continue;
+    const cleanBody = cleanText(data.tweetText);
+    if (cleanBody.length < 6) continue;
+    if (h) seenHandles.add(h);
+    const who = data.handle || data.name || "User";
+    replies.push(`${who}: ${truncateAtWord(cleanBody, 140)}`);
+    if (replies.length >= 3) break;
+  }
+  return replies.join("\n");
+}
+
+function detectComposerMode(replyBox, dialog, composerReplyTo) {
+  if (!dialog) return "reply";
+  if (composerReplyTo) return "reply";
+  const boxRect = replyBox?.getBoundingClientRect?.();
+  const quoteAttachment =
+    dialog.querySelector('[data-testid="attachments"] [data-testid="tweetText"]') ||
+    dialog.querySelector('[data-testid="quoteTweet"]');
+  if (quoteAttachment && boxRect) {
+    const qRect = quoteAttachment.getBoundingClientRect?.();
+    if (qRect && qRect.top >= boxRect.bottom - 24) {
+      return "quote";
+    }
+  }
+  const submitBtn = dialog.querySelector('[data-testid="tweetButton"]');
+  const submitLabel = cleanText(submitBtn?.textContent || submitBtn?.getAttribute?.("aria-label") || "");
+  if (/^(post|posting|ポスト|发帖|게시하기)$/i.test(submitLabel)) {
+    return "quote";
+  }
+  return "reply";
 }
 
 function extractComposerReplyTo(replyBox) {
@@ -1793,6 +1885,7 @@ function extractContextFromDialogNonArticle(dialog, replyBox) {
   const { translatedFromLang, isAutoTranslated } = extractTranslationInfo(dialog, excludeForMain);
   const pollOptions = extractPollOptions(dialog, excludeForMain);
   const cardSummary = extractCardSummary(dialog, excludeForMain);
+  const communityNote = extractCommunityNote(dialog, excludeForMain);
   const imageAlt = extractImageAlt(dialog, excludeForMain);
   const mainImageUrls = extractImageUrls(dialog, excludeForMain, 4);
   const imageUrls = [...mainImageUrls];
@@ -1853,13 +1946,16 @@ function extractContextFromDialogNonArticle(dialog, replyBox) {
     quotedText,
     quotedLang,
     cardSummary,
+    communityNote,
     imageAlt,
     imageUrls,
     mainImageCount,
     mediaType: detectMediaType(dialog, excludeForMain, pollOptions, ""),
     replyTo: extractReplyTo(dialog, excludeForMain),
+    composerMode: detectComposerMode(replyBox, dialog, extractReplyTo(dialog, excludeForMain)),
     parentContext: "",
     selfThreadContinuation: "",
+    topReplies: "",
   };
 }
 
@@ -2144,13 +2240,16 @@ function contextFromVisibleComposer(replyBox, composerReplyTo = "") {
     quotedText: "",
     quotedLang: "",
     cardSummary: "",
+    communityNote: transScope ? extractCommunityNote(transScope, excludeBelowComposer) : "",
     imageAlt,
     imageUrls,
     mainImageCount: imageUrls.length,
     mediaType: transScope ? detectMediaType(transScope, excludeBelowComposer, "", "") : "",
     replyTo,
+    composerMode: detectComposerMode(replyBox, panel, replyTo),
     parentContext: "",
     selfThreadContinuation: "",
+    topReplies: "",
   };
 }
 
@@ -2185,6 +2284,7 @@ function enrichIfTextMissing(extracted, replyBox, composerReplyTo) {
     handle: extracted.handle || recovered.handle,
     translatedFromLang: extracted.translatedFromLang || (sameAuthor ? recovered.translatedFromLang : ""),
     isAutoTranslated: extracted.isAutoTranslated || (sameAuthor ? recovered.isAutoTranslated : false),
+    communityNote: extracted.communityNote || (sameAuthor ? recovered.communityNote : ""),
     imageAlt: extracted.imageAlt || (sameAuthor ? recovered.imageAlt : ""),
     imageUrls:
       Array.isArray(extracted.imageUrls) && extracted.imageUrls.length > 0
@@ -2219,13 +2319,16 @@ function getPostContext(replyBox) {
     quotedText: "",
     quotedLang: "",
     cardSummary: "",
+    communityNote: "",
     imageAlt: "",
     imageUrls: [],
     mainImageCount: 0,
     mediaType: "",
     replyTo: "",
+    composerMode: "reply",
     parentContext: "",
     selfThreadContinuation: "",
+    topReplies: "",
   };
 
   const composerReplyTo = extractComposerReplyTo(replyBox);
@@ -2233,6 +2336,7 @@ function getPostContext(replyBox) {
   // 1. Modal Dialog (Reply / Quote Tweet / Thread Reply)
   const dialog = replyBox.closest('[role="dialog"], dialog[open]');
   if (dialog) {
+    const mode = detectComposerMode(replyBox, dialog, composerReplyTo);
     const articles = filterTopLevelTweets([
       ...dialog.querySelectorAll('article[data-testid="tweet"], article, div[data-testid="tweet"]'),
     ]);
@@ -2257,6 +2361,7 @@ function getPostContext(replyBox) {
       );
       if (extracted) {
         if (!extracted.replyTo && composerReplyTo) extracted.replyTo = composerReplyTo;
+        extracted.composerMode = mode;
         if (chosenIdx > 0) {
           extracted.parentContext = buildParentThreadSummary(articles.slice(0, chosenIdx));
         }
@@ -2269,9 +2374,16 @@ function getPostContext(replyBox) {
       replyBox,
       composerReplyTo
     );
-    if (dialogFallback) return dialogFallback;
+    if (dialogFallback) {
+      dialogFallback.composerMode = mode;
+      return dialogFallback;
+    }
     const visibleDialog = contextFromVisibleComposer(replyBox, composerReplyTo);
-    return visibleDialog || emptyContext;
+    if (visibleDialog) {
+      visibleDialog.composerMode = mode;
+      return visibleDialog;
+    }
+    return emptyContext;
   }
 
   // 2. Reply box directly inside <article>
@@ -2329,11 +2441,15 @@ function getPostContext(replyBox) {
           if (focalIdx > 0) {
             extracted.parentContext = buildParentThreadSummary(allTweets.slice(0, focalIdx));
           }
-          if (focalIdx >= 0 && focalIdx < allTweets.length - 1 && extracted.handle) {
-            extracted.selfThreadContinuation = buildSelfThreadContinuation(
-              allTweets.slice(focalIdx + 1),
-              extracted.handle
-            );
+          if (focalIdx >= 0 && focalIdx < allTweets.length - 1) {
+            const afterFocal = allTweets.slice(focalIdx + 1);
+            let consumed = 0;
+            if (extracted.handle) {
+              const selfThread = buildSelfThreadContinuation(afterFocal, extracted.handle);
+              extracted.selfThreadContinuation = selfThread.text;
+              consumed = selfThread.consumedCount;
+            }
+            extracted.topReplies = buildTopRepliesSummary(afterFocal, extracted.handle, consumed);
           }
           return extracted;
         }
@@ -2941,6 +3057,16 @@ function cleanModelReply(rawText) {
     return "";
   }
 
+  // Defensive strip if structured POINT / REPLY lines ever slip through
+  const replyLineMatch = cleaned.match(
+    /(?:^|\n)\s*\*{0,2}(?:REPLY|BALASAN|返信|回复|回覆|답글)\*{0,2}\s*[:：]\s*\*{0,2}\s*([^\n]+)/i
+  );
+  if (replyLineMatch && replyLineMatch[1]) {
+    cleaned = replyLineMatch[1];
+  } else if (/^\s*\*{0,2}(?:POINT|INTI|要点)\*{0,2}\s*[:：]/i.test(cleaned)) {
+    return "";
+  }
+
   cleaned = stripMatchingOuterQuotes(
     cleaned
       .replace(/\r?\n+/g, " ")
@@ -2951,6 +3077,37 @@ function cleanModelReply(rawText) {
     .trim();
 
   return dedupeRepeatedText(cleaned);
+}
+
+function classifyEditorDraft(box) {
+  const current = getEditorText(box);
+  if (!current || current.length < 3) {
+    return { previousDraft: "", userSeed: "" };
+  }
+  const last = lastGeneratedByBox.get(box);
+  if (last && last.text) {
+    const normCur = normalizeForCompare(current);
+    const normLast = normalizeForCompare(last.text);
+    if (normCur === normLast) {
+      return { previousDraft: current.slice(0, 180), userSeed: "" };
+    }
+    // Treat minor edits of the last AI reply as a regenerate request rather than a user seed
+    const curWords = new Set(current.toLowerCase().split(/\s+/).filter((w) => w.length >= 2));
+    const lastWords = new Set(last.text.toLowerCase().split(/\s+/).filter((w) => w.length >= 2));
+    let shared = 0;
+    for (const w of curWords) {
+      if (lastWords.has(w)) shared += 1;
+    }
+    const overlap = curWords.size > 0 ? shared / Math.max(curWords.size, lastWords.size) : 0;
+    if (overlap >= 0.55) {
+      return { previousDraft: current.slice(0, 180), userSeed: "" };
+    }
+  }
+  // Short non-AI draft typed by the user acts as a guided direction seed
+  if (current.length <= 160) {
+    return { previousDraft: "", userSeed: current };
+  }
+  return { previousDraft: "", userSeed: "" };
 }
 
 function showForeignTranslationPreview(replyText, langCode, langLabel) {
@@ -3051,6 +3208,7 @@ async function generateText(box, btn, mountContainer, angle = "auto") {
 
     const timeoutMs = Math.round(clampTimeoutSec(settingsCache.timeout) * 1000);
     const selectedAngle = angle && angle !== "auto" ? angle : "auto";
+    const { previousDraft, userSeed } = classifyEditorDraft(box);
 
     const result = await sendMessageSafe(
       {
@@ -3062,6 +3220,8 @@ async function generateText(box, btn, mountContainer, angle = "auto") {
         timeoutMs,
         angle: selectedAngle,
         visionMode: settingsCache.visionMode,
+        previousDraft,
+        userSeed,
         post,
       },
       Math.min(timeoutMs * 2 + 30000, 360000)
@@ -3126,6 +3286,8 @@ async function generateText(box, btn, mountContainer, angle = "auto") {
         type: "info",
         duration: 6000,
       });
+    } else {
+      lastGeneratedByBox.set(box, { text: replyText, at: Date.now() });
     }
 
     succeeded = true;
