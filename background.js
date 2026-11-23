@@ -1,6 +1,6 @@
 // Background Service Worker — CORS-free API proxy for X AI Reply.
-// v5.3.0 Global Edition: Deep Post + High-Res Vision Understanding, Anti-Hallucination Grounding,
-// Vision Multimodal + Auto Text Fallback, Quick Reaction Angles, Anti-Repetition Memory,
+// v5.3.1 Global Edition: Deep Post + High-Res Vision Understanding, Anti-Hallucination Grounding,
+// Vision Multimodal + Auto 413/Text Fallback, Quick Reaction Angles, Anti-Repetition Memory,
 // and Live English Translation Preview for non-English replies.
 
 const API_TIMEOUT_MS = 60000;
@@ -16,11 +16,15 @@ function normalizeTimeout(value) {
   return Math.min(Math.max(Math.round(n), MIN_TIMEOUT_MS), MAX_TIMEOUT_MS);
 }
 
-// Unambiguous Indonesian stopwords & everyday slang (for detecting Indonesian tweets accurately)
+// Unambiguous Indonesian stopwords & everyday slang (excludes cross-language collisions like dr/ga/pas/lu/gan/kl)
 const ID_STOP =
-  /\b(yang|yg|dan|ini|itu|tidak|nggak|gak|ga|ngga|dengan|dgn|untuk|utk|dari|dr|ada|akan|sudah|udah|udh|belum|blm|bisa|juga|jg|saya|aku|gue|gw|kamu|lu|elu|kalian|dia|mereka|kita|kami|adalah|karena|krn|kalau|kalo|kl|jadi|jd|pada|atau|lebih|hanya|cuma|sangat|banget|bgt|hari|bukan|loh|lho|sih|dong|nih|tuh|kok|lah|kah|aja|saja|mau|lagi|lg|masih|baru|bikin|pakai|pake|lihat|liat|tahu|tau|gimana|gitu|gini|tapi|tp|memang|emang|kayak|kaya|buat|terus|trs|pas|banyak|semua|orang|kenapa|kapan|dimana|siapa|bagaimana|mantap|keren|parah|anjir|wkwk|wkwkwk|cuy|gan|bang|kak|sekarang|kemarin|besok|makin|paling|jangan|harus|perlu|mungkin|pasti|selalu|pernah|tanpa|sampai|sejak|mulai|cuan|nyangkut|serok|gokil|santuy|bener|benar|bagus|cepat|mahal|murah|beli|jual|dapet|dapat|punya|bilang)\b/g;
+  /\b(yang|yg|dan|ini|itu|tidak|nggak|gak|ngga|dengan|dgn|untuk|utk|dari|ada|akan|sudah|udah|udh|belum|blm|bisa|juga|jg|saya|aku|gue|gw|kamu|elu|kalian|dia|mereka|kita|kami|adalah|karena|krn|kalau|kalo|jadi|jd|pada|atau|lebih|hanya|cuma|sangat|banget|bgt|hari|bukan|loh|lho|sih|dong|nih|tuh|kok|lah|kah|aja|saja|mau|lagi|lg|masih|baru|bikin|pakai|pake|lihat|liat|tahu|tau|gimana|gitu|gini|tapi|tp|memang|emang|kayak|kaya|buat|terus|trs|banyak|semua|orang|kenapa|kapan|dimana|siapa|bagaimana|mantap|keren|parah|anjir|wkwk|wkwkwk|cuy|bang|kak|sekarang|kemarin|besok|makin|paling|jangan|harus|perlu|mungkin|pasti|selalu|pernah|tanpa|sampai|sejak|mulai|cuan|nyangkut|serok|gokil|santuy|bener|benar|bagus|cepat|mahal|murah|beli|jual|dapet|dapat|punya|bilang|bakal|naik|turun)\b/g;
 
-// Distinctive English stopwords & common X/CT vocabulary
+// Strict English function words (excludes cross-language tech/CT loanwords like chart/bullish/launch/update/live)
+const EN_FUNC_STOP =
+  /\b(the|and|is|are|was|were|be|been|being|to|of|for|with|from|into|over|after|before|about|between|through|during|without|under|again|further|then|once|here|there|when|where|why|how|all|any|both|each|few|more|most|other|some|such|nor|not|only|own|same|than|too|very|can|will|just|should|now|that|this|these|those|what|which|who|whom|whose|you|your|yours|we|our|they|their|them|it|its|he|him|his|she|her|my|have|has|had|having|do|does|did|doing|would|could|might|must|shall|but|if|because|until|while|really|think|know|looks|looking|going|never|always|every|people|still|even)\b/g;
+
+// Distinctive English stopwords & common X/CT vocabulary (for post language detection)
 const EN_STOP =
   /\b(the|and|is|are|was|were|be|been|being|to|of|for|with|at|by|from|into|over|after|before|about|between|through|during|without|under|again|further|then|once|here|there|when|where|why|how|all|any|both|each|few|more|most|other|some|such|nor|not|only|own|same|than|too|very|can|will|just|should|now|that|this|these|those|what|which|who|whom|whose|you|your|yours|we|our|they|their|them|it|its|he|him|his|she|her|my|have|has|had|having|do|does|did|doing|would|could|might|must|shall|but|if|because|until|while|out|up|down|off|get|got|make|made|new|good|great|best|still|even|back|really|think|know|see|look|looks|looking|going|never|always|every|next|last|first|people|time|year|day|week|way|work|need|want|right|well|much|many|bullish|bearish|market|chart|launch|live|update|building|build|shipping|breaking|massive|strong|landing|makes|worth|watching)\b/g;
 
@@ -86,26 +90,46 @@ function getRecentReplies() {
   });
 }
 
+let recentReplyWriteQueue = Promise.resolve();
+
+function sanitizeReplyForMemory(replyText) {
+  return String(replyText || "")
+    .replace(/\r?\n+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^["'“”‘’「」『』`]+|["'“”‘’「」『』`]+$/g, "")
+    .trim()
+    .slice(0, 140);
+}
+
 function recordRecentReply(replyText) {
-  return new Promise((resolve) => {
-    try {
-      const clean = String(replyText || "").trim().slice(0, 140);
-      if (!clean || !chrome.storage || !chrome.storage.local) return resolve();
-      chrome.storage.local.get(["recentReplies"], (data) => {
-        void chrome.runtime.lastError;
-        const prev = Array.isArray(data?.recentReplies) ? data.recentReplies : [];
-        const filtered = prev.filter((item) => item !== clean);
-        filtered.push(clean);
-        const next = filtered.slice(-MAX_RECENT_REPLIES);
-        chrome.storage.local.set({ recentReplies: next }, () => {
-          void chrome.runtime.lastError;
-          resolve();
-        });
-      });
-    } catch (e) {
-      resolve();
-    }
-  });
+  const clean = sanitizeReplyForMemory(replyText);
+  if (!clean || !chrome.storage || !chrome.storage.local) return Promise.resolve();
+
+  recentReplyWriteQueue = recentReplyWriteQueue
+    .catch(() => {})
+    .then(
+      () =>
+        new Promise((resolve) => {
+          try {
+            chrome.storage.local.get(["recentReplies"], (data) => {
+              void chrome.runtime.lastError;
+              const prev = Array.isArray(data?.recentReplies) ? data.recentReplies : [];
+              const filtered = prev.filter((item) => item !== clean);
+              filtered.push(clean);
+              const next = filtered.slice(-MAX_RECENT_REPLIES);
+              chrome.storage.local.set({ recentReplies: next }, () => {
+                void chrome.runtime.lastError;
+                resolve();
+              });
+            });
+          } catch (e) {
+            resolve();
+          }
+        })
+    );
+
+  return recentReplyWriteQueue;
 }
 
 function clearRecentReplies() {
@@ -231,23 +255,40 @@ function detectTweetLanguage(text, domLangHint = "", options = {}) {
   const lower = cleaned.toLowerCase();
   const idHits = countMatches(ID_STOP, lower);
   const idMorphHits = countMatches(ID_MORPH, lower);
-  const idScore = idHits + idMorphHits;
+  // Avoid letting a lone "-nya" proper noun override an explicit non-Indonesian DOM lang tag
+  const idScore =
+    idHits === 0 && idMorphHits === 1 && normDom && normDom !== "id" && normDom !== "in"
+      ? 0
+      : idHits + idMorphHits;
   const enHits = countMatches(EN_STOP, lower);
+  const enFuncHits = countMatches(EN_FUNC_STOP, lower);
 
-  if (idScore > 0 && idScore >= enHits) {
+  const latinLangScores = [
+    { key: "id", hits: idScore, strong: idHits },
+    { key: "es", hits: countMatches(ES_STOP, lower), strong: countMatches(ES_STOP, lower) },
+    { key: "pt", hits: countMatches(PT_STOP, lower), strong: countMatches(PT_STOP, lower) },
+    { key: "fr", hits: countMatches(FR_STOP, lower), strong: countMatches(FR_STOP, lower) },
+    { key: "de", hits: countMatches(DE_STOP, lower), strong: countMatches(DE_STOP, lower) },
+    { key: "tr", hits: countMatches(TR_STOP, lower), strong: countMatches(TR_STOP, lower) },
+  ].sort((a, b) => {
+    if (b.hits !== a.hits) return b.hits - a.hits;
+    // Tie-break in favor of explicit DOM language hint
+    const aDom = a.key === normDom || (a.key === "id" && normDom === "in") ? 1 : 0;
+    const bDom = b.key === normDom || (b.key === "id" && normDom === "in") ? 1 : 0;
+    return bDom - aDom;
+  });
+
+  const topLatin = latinLangScores[0];
+  if (
+    topLatin.key === "id" &&
+    topLatin.hits > 0 &&
+    (topLatin.hits > enHits || (topLatin.hits === enHits && enFuncHits === 0))
+  ) {
     return DOM_LANG_MAP.id;
   }
 
-  const latinLangScores = [
-    { key: "es", hits: countMatches(ES_STOP, lower) },
-    { key: "pt", hits: countMatches(PT_STOP, lower) },
-    { key: "fr", hits: countMatches(FR_STOP, lower) },
-    { key: "de", hits: countMatches(DE_STOP, lower) },
-    { key: "tr", hits: countMatches(TR_STOP, lower) },
-  ].sort((a, b) => b.hits - a.hits);
-
-  if (latinLangScores[0].hits >= 2 && latinLangScores[0].hits >= enHits) {
-    return DOM_LANG_MAP[latinLangScores[0].key];
+  if (topLatin.key !== "id" && topLatin.hits >= 2 && topLatin.hits >= enHits) {
+    return DOM_LANG_MAP[topLatin.key];
   }
 
   // Trust explicit non-English DOM language tag (e.g. lang="ja" / "ko" / "zh" / "es") unless text is clearly long English
@@ -367,13 +408,14 @@ function isReplyInExpectedLanguage(replyText, lang) {
 
   const cleanedForLatinCheck = stripNoiseForLang(raw);
   const lower = cleanedForLatinCheck.toLowerCase();
-  const enHits = countMatches(EN_STOP, lower);
+  // Use strict English function words so natural CT/tech loanwords (chart, bullish, launch, update, live) don't false-reject
+  const enFuncHits = countMatches(EN_FUNC_STOP, lower);
   const latinWords = countMatches(/\b[a-z]{3,}\b/g, lower);
 
   if (lang.code === "zh-CN" || lang.code === "zh-TW") {
     const hanziCount = countMatches(/[\u4e00-\u9fff\u3400-\u4dbf]/g, raw);
     if (hanziCount < 2 || /[\u3040-\u30ff]/.test(raw)) return false;
-    if (enHits >= 2 || latinWords > hanziCount) return false;
+    if (enFuncHits >= 2 || (enFuncHits >= 1 && latinWords > hanziCount)) return false;
     return true;
   }
   if (lang.code === "ja") {
@@ -382,49 +424,49 @@ function isReplyInExpectedLanguage(replyText, lang) {
     const jpChars = kanaCount + kanjiCount;
     if (jpChars < 2) return false;
     if (raw.length >= 6 && kanaCount === 0) return false;
-    if (enHits >= 2 || latinWords > jpChars) return false;
+    if (enFuncHits >= 2 || (enFuncHits >= 1 && latinWords > jpChars)) return false;
     return true;
   }
   if (lang.code === "ko") {
     const koChars = countMatches(/[\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]/g, raw);
-    if (koChars < 2 || enHits >= 2 || latinWords > koChars) return false;
+    if (koChars < 2 || enFuncHits >= 2 || (enFuncHits >= 1 && latinWords > koChars)) return false;
     return true;
   }
   if (lang.code === "ru" || lang.code === "uk") {
     const cyr = countMatches(/[\u0400-\u04ff]/g, raw);
-    return cyr >= 3 && enHits < 2;
+    return cyr >= 3 && enFuncHits < 2;
   }
   if (lang.code === "ar") {
     const ar = countMatches(/[\u0600-\u06ff\u0750-\u077f]/g, raw);
-    return ar >= 3 && enHits < 2;
+    return ar >= 3 && enFuncHits < 2;
   }
   if (lang.code === "th") {
     const th = countMatches(/[\u0e00-\u0e7f]/g, raw);
-    return th >= 3 && enHits < 2;
+    return th >= 3 && enFuncHits < 2;
   }
   if (lang.code === "hi") {
     const hi = countMatches(/[\u0900-\u097f]/g, raw);
-    return hi >= 3 && enHits < 2;
+    return hi >= 3 && enFuncHits < 2;
   }
 
   const idScore = countMatches(ID_STOP, lower) + countMatches(ID_MORPH, lower);
 
   if (lang.code === "id") {
-    if (enHits >= 2 && idScore === 0) return false;
-    if (enHits >= 3 && enHits > idScore * 2) return false;
+    if (enFuncHits >= 2 && idScore === 0) return false;
+    if (enFuncHits >= 3 && enFuncHits > idScore * 2) return false;
     if (/[\u3040-\u30ff\uac00-\ud7af\u4e00-\u9fff]/.test(raw)) return false;
     return true;
   }
 
   if (lang.code === "en") {
-    if (idScore >= 2 && enHits === 0) return false;
+    if (idScore >= 2 && enFuncHits === 0) return false;
     if (/[\u3040-\u30ff\uac00-\ud7af\u4e00-\u9fff\u0400-\u04ff\u0600-\u06ff\u0e00-\u0e7f]/.test(raw)) {
       return false;
     }
     return true;
   }
 
-  if (enHits >= 3) {
+  if (enFuncHits >= 3) {
     if (lang.code === "vi" && !/[ăâđêôơưảẩẫậắằẳẵặẻểễệỉịỏổỗộớờởỡợủửữựỳỷỹỵ]/i.test(raw)) {
       return false;
     }
@@ -1058,7 +1100,16 @@ function contextLock(lang, post, detected, customStylePrompt, angle, recentRepli
 }
 
 function buildRewriteMessages(wrongReply, lang, post) {
-  const postSnippet = String(post?.tweetText || post?.quotedText || "").slice(0, 260);
+  const postSnippet = String(
+    post?.tweetText ||
+      post?.articleTitle ||
+      post?.selfThreadContinuation ||
+      post?.pollOptions ||
+      post?.quotedText ||
+      post?.cardSummary ||
+      post?.imageAlt ||
+      ""
+  ).slice(0, 280);
 
   if (lang.code === "ja") {
     return [
@@ -1113,7 +1164,8 @@ function buildRewriteMessages(wrongReply, lang, post) {
 }
 
 const MAX_VISION_IMAGES = 4;
-const MAX_INLINE_IMAGE_BYTES = 3 * 1024 * 1024;
+const MAX_INLINE_IMAGE_BYTES = 2.5 * 1024 * 1024;
+const MAX_TOTAL_INLINE_BYTES = 4.5 * 1024 * 1024;
 const IMAGE_FETCH_TIMEOUT_MS = 4500;
 
 function bytesToBase64(bytes) {
@@ -1126,40 +1178,81 @@ function bytesToBase64(bytes) {
   return btoa(binary);
 }
 
+function downgradeXMediaToMedium(url) {
+  try {
+    const u = new URL(url);
+    if (/(^|\.)twimg\.com$/i.test(u.hostname) && u.searchParams.has("name")) {
+      u.searchParams.set("name", "medium");
+      return u.toString();
+    }
+  } catch (e) {}
+  return "";
+}
+
 // Fetch X media directly in the service worker and inline as base64 Data URI
 // so third-party / self-hosted Vision APIs can always see the exact images even if they cannot fetch pbs.twimg.com
-async function fetchImageAsDataUrl(url) {
+async function fetchImageAsDataUrl(url, maxAllowedBytes = MAX_INLINE_IMAGE_BYTES) {
   try {
     const parsed = new URL(url);
     if (!/(^|\.)twimg\.com$/i.test(parsed.hostname)) {
-      return url;
+      return { payload: url, bytes: 0 };
     }
   } catch (e) {
-    return url;
+    return { payload: url, bytes: 0 };
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), IMAGE_FETCH_TIMEOUT_MS);
-  try {
-    const resp = await fetch(url, {
-      method: "GET",
-      signal: controller.signal,
-      cache: "force-cache",
-    });
-    if (!resp.ok) return url;
-    const rawType = String(resp.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
-    const mime = /^image\/(jpeg|jpg|png|webp|gif)$/i.test(rawType) ? rawType : "image/jpeg";
-    const buf = await resp.arrayBuffer();
-    if (!buf || buf.byteLength === 0 || buf.byteLength > MAX_INLINE_IMAGE_BYTES) {
-      return url;
+  const fetchOnce = async (targetUrl) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), IMAGE_FETCH_TIMEOUT_MS);
+    try {
+      const resp = await fetch(targetUrl, {
+        method: "GET",
+        signal: controller.signal,
+        cache: "force-cache",
+      });
+      if (!resp.ok) {
+        // Drop dead/expired media (404/410) instead of feeding broken URLs to Vision
+        if (resp.status === 404 || resp.status === 410) return { drop: true };
+        return { fallbackUrl: targetUrl };
+      }
+      const rawType = String(resp.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+      // Never base64-encode HTML/XML error pages or SVG as fake image/jpeg
+      if (!rawType.startsWith("image/") || rawType === "image/svg+xml") {
+        return { drop: true };
+      }
+      const normalizedType = rawType === "image/jpg" ? "image/jpeg" : rawType;
+      const supportedMime = /^image\/(jpeg|png|webp|gif)$/i.test(normalizedType)
+        ? normalizedType
+        : "";
+      if (!supportedMime) {
+        return { fallbackUrl: targetUrl };
+      }
+      const buf = await resp.arrayBuffer();
+      if (!buf || buf.byteLength === 0) {
+        return { drop: true };
+      }
+      if (buf.byteLength > maxAllowedBytes) {
+        return { tooLarge: true, fallbackUrl: targetUrl };
+      }
+      const b64 = bytesToBase64(new Uint8Array(buf));
+      return { payload: `data:${supportedMime};base64,${b64}`, bytes: buf.byteLength };
+    } catch (e) {
+      return { fallbackUrl: targetUrl };
+    } finally {
+      clearTimeout(timer);
     }
-    const b64 = bytesToBase64(new Uint8Array(buf));
-    return `data:${mime};base64,${b64}`;
-  } catch (e) {
-    return url;
-  } finally {
-    clearTimeout(timer);
+  };
+
+  let res = await fetchOnce(url);
+  if (res.tooLarge) {
+    const mediumUrl = downgradeXMediaToMedium(url);
+    if (mediumUrl && mediumUrl !== url) {
+      res = await fetchOnce(mediumUrl);
+    }
   }
+  if (res.drop) return { payload: "", bytes: 0 };
+  if (res.payload) return { payload: res.payload, bytes: res.bytes };
+  return { payload: res.fallbackUrl || url, bytes: 0 };
 }
 
 async function prepareVisionImagePayloads(imageUrls) {
@@ -1168,7 +1261,27 @@ async function prepareVisionImagePayloads(imageUrls) {
     .filter((u) => typeof u === "string" && /^https?:\/\//i.test(u))
     .slice(0, MAX_VISION_IMAGES);
   if (validUrls.length === 0) return [];
-  return Promise.all(validUrls.map((url) => fetchImageAsDataUrl(url)));
+
+  const fetched = await Promise.all(validUrls.map((url) => fetchImageAsDataUrl(url, MAX_INLINE_IMAGE_BYTES)));
+  const payloads = [];
+  let totalBytes = 0;
+
+  for (let i = 0; i < fetched.length; i++) {
+    const item = fetched[i];
+    if (!item || !item.payload) continue;
+    if (item.bytes > 0) {
+      if (totalBytes + item.bytes <= MAX_TOTAL_INLINE_BYTES) {
+        totalBytes += item.bytes;
+        payloads.push(item.payload);
+      } else {
+        // Keep total JSON body safely under proxy size limits by falling back to remote URL for overflow images
+        payloads.push(validUrls[i]);
+      }
+    } else {
+      payloads.push(item.payload);
+    }
+  }
+  return payloads;
 }
 
 function buildUserContentWithVision(textPrompt, resolvedImages, visionEnabled) {
@@ -1191,9 +1304,30 @@ function buildUserContentWithVision(textPrompt, resolvedImages, visionEnabled) {
   ];
 }
 
+function extractMessageContentString(raw) {
+  if (typeof raw === "string") return raw;
+  if (Array.isArray(raw)) {
+    return raw
+      .map((part) => {
+        if (typeof part === "string") return part;
+        if (part && typeof part === "object") {
+          return typeof part.text === "string"
+            ? part.text
+            : typeof part.content === "string"
+              ? part.content
+              : "";
+        }
+        return "";
+      })
+      .filter(Boolean)
+      .join(" ");
+  }
+  return "";
+}
+
 function extractReplyContentFromData(data) {
   const msg = data?.choices?.[0]?.message;
-  let text = msg?.content;
+  let text = extractMessageContentString(msg?.content);
   if (!text && typeof data?.choices?.[0]?.text === "string") {
     text = data.choices[0].text;
   }
@@ -1201,6 +1335,46 @@ function extractReplyContentFromData(data) {
     .replace(/<think>[\s\S]*?<\/think>/gi, "")
     .replace(/<thinking>[\s\S]*?<\/thinking>/gi, "")
     .trim();
+}
+
+function isNonVisionConfigError(res) {
+  if (!res || !res.data) return false;
+  const raw =
+    typeof res.data.error === "string"
+      ? res.data.error
+      : typeof res.data.error?.message === "string"
+        ? res.data.error.message
+        : typeof res.data.error?.code === "string"
+          ? res.data.error.code
+          : JSON.stringify(res.data.error || res.data._raw || "");
+  return /model[_ ]?not[_ ]?found|does not exist|unknown model|invalid[_ ]?api[_ ]?key|unauthorized|authentication|insufficient[_ ]?quota|billing|rate[_ ]?limit|context[_ ]?length/i.test(
+    String(raw)
+  );
+}
+
+function hasAnyTargetNonLatinScript(text, lang) {
+  const s = String(text || "");
+  if (!s || !lang) return false;
+  switch (lang.code) {
+    case "ja":
+      return /[\u3040-\u30ff\uff66-\uff9f]/.test(s);
+    case "ko":
+      return /[\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]/.test(s);
+    case "zh-CN":
+    case "zh-TW":
+      return /[\u4e00-\u9fff\u3400-\u4dbf]/.test(s);
+    case "ru":
+    case "uk":
+      return /[\u0400-\u04ff]/.test(s);
+    case "ar":
+      return /[\u0600-\u06ff\u0750-\u077f]/.test(s);
+    case "th":
+      return /[\u0e00-\u0e7f]/.test(s);
+    case "hi":
+      return /[\u0900-\u097f]/.test(s);
+    default:
+      return false;
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1465,6 +1639,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   (async () => {
+    const baseTimeoutMs = normalizeTimeout(timeoutMs);
+    const overallDeadline = Date.now() + Math.min(baseTimeoutMs * 2 + 15000, 320000);
+    const remainingBudget = (minFloor = 8000) =>
+      Math.min(baseTimeoutMs, Math.max(minFloor, overallDeadline - Date.now()));
+
     const entityScanText = [
       post?.articleTitle,
       post?.tweetText,
@@ -1490,6 +1669,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     const preparedVisionImages =
       rawVisionUrls.length > 0 ? await prepareVisionImagePayloads(rawVisionUrls) : [];
     const willAttachVision = preparedVisionImages.length > 0;
+    const sentInlineDataUri = preparedVisionImages.some((u) => /^data:image\//i.test(u));
 
     const { systemLock, userReminder } = contextLock(
       lang,
@@ -1520,7 +1700,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       parsedEndpoint,
       originPattern,
       apiKey: cleanKey,
-      timeoutMs,
+      timeoutMs: baseTimeoutMs,
       body: {
         model: model,
         messages: [
@@ -1533,12 +1713,51 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       },
     });
 
-    // Automatic plain-text fallback if the configured model does not support Vision inputs (HTTP 400 / 415 / 422)
+    // If base64 payload triggered HTTP 413 Payload Too Large, retry Vision using lightweight remote URLs first
+    if (
+      usedVisionPayload &&
+      sentInlineDataUri &&
+      firstRes &&
+      !firstRes.ok &&
+      firstRes.status === 413 &&
+      rawVisionUrls.length > 0 &&
+      overallDeadline - Date.now() > 6000
+    ) {
+      const remoteUrlContent = buildUserContentWithVision(
+        formatPostBlock(post, rawVisionUrls.length) + "\n\n" + userReminder,
+        rawVisionUrls,
+        visionEnabled
+      );
+      firstRes = await runCompletion({
+        endpoint,
+        parsedEndpoint,
+        originPattern,
+        apiKey: cleanKey,
+        timeoutMs: remainingBudget(),
+        body: {
+          model: model,
+          messages: [
+            systemMessage,
+            { role: "user", content: remoteUrlContent },
+          ],
+          max_tokens: 1024,
+          temperature: 0.68,
+          stream: false,
+        },
+      });
+    }
+
+    // Automatic plain-text fallback if the configured model/gateway rejected Vision inputs (HTTP 400 / 413 / 415 / 422)
+    // Skip fallback when the upstream error is clearly a model/auth/quota misconfiguration
     if (
       usedVisionPayload &&
       firstRes &&
       !firstRes.ok &&
-      (firstRes.status === 400 || firstRes.status === 415 || firstRes.status === 422)
+      (firstRes.status === 400 ||
+        firstRes.status === 413 ||
+        firstRes.status === 415 ||
+        firstRes.status === 422) &&
+      !isNonVisionConfigError(firstRes)
     ) {
       // Never hallucinate a reply for an image-only post if the model rejected Vision and there is no text context
       if (!hasReadableTextContext(post)) {
@@ -1551,39 +1770,41 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         };
       }
 
-      // Rebuild system prompt with visionAttached=false so the model never hallucinates unseen images
-      const textOnlyLock = contextLock(
-        lang,
-        post,
-        detected,
-        systemPrompt,
-        angle,
-        recentReplies,
-        false
-      );
-      const textOnlySystemMessage = {
-        role: "system",
-        content: buildSystemHeader(lang) + "\n\n" + textOnlyLock.systemLock,
-      };
-      const textOnlyUserPrompt = formatPostBlock(post) + "\n\n" + textOnlyLock.userReminder;
+      if (overallDeadline - Date.now() > 6000) {
+        // Rebuild system prompt with visionAttached=false so the model never hallucinates unseen images
+        const textOnlyLock = contextLock(
+          lang,
+          post,
+          detected,
+          systemPrompt,
+          angle,
+          recentReplies,
+          false
+        );
+        const textOnlySystemMessage = {
+          role: "system",
+          content: buildSystemHeader(lang) + "\n\n" + textOnlyLock.systemLock,
+        };
+        const textOnlyUserPrompt = formatPostBlock(post) + "\n\n" + textOnlyLock.userReminder;
 
-      firstRes = await runCompletion({
-        endpoint,
-        parsedEndpoint,
-        originPattern,
-        apiKey: cleanKey,
-        timeoutMs,
-        body: {
-          model: model,
-          messages: [
-            textOnlySystemMessage,
-            { role: "user", content: textOnlyUserPrompt },
-          ],
-          max_tokens: 1024,
-          temperature: 0.68,
-          stream: false,
-        },
-      });
+        firstRes = await runCompletion({
+          endpoint,
+          parsedEndpoint,
+          originPattern,
+          apiKey: cleanKey,
+          timeoutMs: remainingBudget(),
+          body: {
+            model: model,
+            messages: [
+              textOnlySystemMessage,
+              { role: "user", content: textOnlyUserPrompt },
+            ],
+            max_tokens: 1024,
+            temperature: 0.68,
+            stream: false,
+          },
+        });
+      }
     }
 
     if (!firstRes || !firstRes.ok) {
@@ -1593,13 +1814,17 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     const firstCandidate = extractReplyContentFromData(firstRes.data);
 
     // Automatic Self-Correction Guard if the model still replied in the wrong language
-    if (firstCandidate && !isReplyInExpectedLanguage(firstCandidate, lang)) {
+    if (
+      firstCandidate &&
+      !isReplyInExpectedLanguage(firstCandidate, lang) &&
+      overallDeadline - Date.now() > 6000
+    ) {
       const rewriteRes = await runCompletion({
         endpoint,
         parsedEndpoint,
         originPattern,
         apiKey: cleanKey,
-        timeoutMs,
+        timeoutMs: remainingBudget(6000),
         body: {
           model: model,
           messages: buildRewriteMessages(firstCandidate, lang, post),
@@ -1610,7 +1835,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       });
 
       const rewrittenText = rewriteRes?.ok ? extractReplyContentFromData(rewriteRes.data) : "";
-      if (rewrittenText && isReplyInExpectedLanguage(rewrittenText, lang)) {
+      const rewritePasses = rewrittenText && isReplyInExpectedLanguage(rewrittenText, lang);
+      const rewriteImprovedScript =
+        rewrittenText &&
+        !hasAnyTargetNonLatinScript(firstCandidate, lang) &&
+        hasAnyTargetNonLatinScript(rewrittenText, lang);
+
+      if (rewritePasses || rewriteImprovedScript) {
         await recordRecentReply(rewrittenText);
         return {
           ...rewriteRes,

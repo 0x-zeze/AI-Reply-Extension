@@ -1,4 +1,4 @@
-// X AI Reply — Content Script (v5.3.0 Global Edition)
+// X AI Reply — Content Script (v5.3.1 Global Edition)
 // GPU-composited "AI Reply" + Quick Angle Mini-Menu, Alt+R Shortcut,
 // Vision Image Extractor, Multi-Layer Context Engine, English Translation Preview,
 // & Anti-Double-Text Draft.js / Lexical Replace Handler.
@@ -77,7 +77,16 @@ function isComposerBox(el) {
     return true;
   }
   const label = `${el.getAttribute("aria-label") || ""} ${el.getAttribute("aria-placeholder") || ""}`;
-  return /post|reply|quote|what.?s happening|tweet|balas|kutip/i.test(label);
+  return /post|reply|quote|what.?s happening|tweet|balas|kutip|返信|ポスト|回复|回覆|发帖|답글|게시|responder|répondre|antworten/i.test(label);
+}
+
+function hasAnyComposerHintInDom(scope) {
+  if (!scope || typeof scope.querySelector !== "function") return false;
+  return Boolean(
+    scope.querySelector(
+      '[contenteditable="true"], [contenteditable="plaintext-only"], textarea, [role="dialog"], dialog[open], [data-testid^="tweetButton"]'
+    )
+  );
 }
 
 function queryDeep(root, selector) {
@@ -116,11 +125,12 @@ function isGrokSurface(el) {
 function findComposerFromPlaceholder(root) {
   if (/^\/messages(\/|$)|\/i\/grok|\/grok/i.test(location.pathname)) return [];
   const scope = root && (root.querySelectorAll || root instanceof ShadowRoot) ? root : document;
+  if (!hasAnyComposerHintInDom(scope)) return [];
   const hints = [];
   const walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
       const value = node.nodeValue || "";
-      return /post your reply|what.?s happening|tweet your reply/i.test(value)
+      return /post your reply|what.?s happening|tweet your reply|posting balasan|返信をポスト|发布你的回复|답글 게시하기|postea tu respuesta/i.test(value)
         ? NodeFilter.FILTER_ACCEPT
         : NodeFilter.FILTER_REJECT;
     },
@@ -161,6 +171,7 @@ function findComposerFromPlaceholder(root) {
 function queryComposerBoxes(root) {
   if (/^\/messages(\/|$)|\/i\/grok|\/grok/i.test(location.pathname)) return [];
   const scope = root && (root.querySelectorAll || root instanceof ShadowRoot) ? root : document;
+  if (!hasAnyComposerHintInDom(scope)) return [];
   const nodes = queryDeep(
     scope,
     `${COMPOSER_SELECTOR}, [data-testid^="tweetTextarea"] [contenteditable="true"], [data-testid*="tweetTextarea"] [contenteditable]`
@@ -627,7 +638,7 @@ function showToast(message, options = {}) {
   if (!host) {
     host = document.createElement("div");
     host.className = "x-ai-toast-host";
-    document.body.appendChild(host);
+    (document.body || document.documentElement).appendChild(host);
   }
 
   while (host.children.length >= 2) {
@@ -712,12 +723,44 @@ function openExtensionSettings() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// Settings Sync
+// Settings Sync (chrome.storage.local v2 with seamless sync fallback)
 // ═══════════════════════════════════════════════════════════════
+const SETTINGS_KEYS = [
+  "baseUrl",
+  "apiKey",
+  "model",
+  "prompt",
+  "timeout",
+  "visionMode",
+  "translationPreview",
+  "shortcutEnabled",
+  "_storageV2",
+];
+let usingLocalStorageV2 = false;
+
+function normalizeBaseUrl(raw) {
+  let v = String(raw || "").trim();
+  if (!v) return DEFAULT_BASE_URL;
+  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(v)) {
+    const isLocal = /^(localhost|127\.0\.0\.1|0\.0\.0\.0|192\.168\.|10\.)/i.test(v);
+    v = (isLocal ? "http://" : "https://") + v;
+  }
+  return v.replace(/\/+$/, "");
+}
+
+function clampTimeoutSec(value) {
+  const t = Number(value);
+  if (!Number.isFinite(t) || t <= 0) return 60;
+  return Math.min(Math.max(Math.round(t), 5), 180);
+}
+
 function applyStorageData(data) {
   if (!data) return;
+  if (data._storageV2 === true) {
+    usingLocalStorageV2 = true;
+  }
   if (data.baseUrl !== undefined) {
-    settingsCache.baseUrl = (data.baseUrl || DEFAULT_BASE_URL).replace(/\/+$/, "");
+    settingsCache.baseUrl = normalizeBaseUrl(data.baseUrl || DEFAULT_BASE_URL);
   }
   if (data.apiKey !== undefined) {
     settingsCache.apiKey = data.apiKey || "";
@@ -729,8 +772,7 @@ function applyStorageData(data) {
     settingsCache.prompt = data.prompt;
   }
   if (data.timeout !== undefined) {
-    const t = Number(data.timeout);
-    settingsCache.timeout = Number.isFinite(t) && t > 0 ? t : 60;
+    settingsCache.timeout = clampTimeoutSec(data.timeout);
   }
   if (data.visionMode !== undefined) {
     settingsCache.visionMode = data.visionMode !== false;
@@ -743,59 +785,84 @@ function applyStorageData(data) {
   }
 }
 
-function loadSettings() {
+function readStorageArea(area, keys) {
   return new Promise((resolve) => {
     try {
-      chrome.storage.sync.get(
-        [
-          "baseUrl",
-          "apiKey",
-          "model",
-          "prompt",
-          "timeout",
-          "visionMode",
-          "translationPreview",
-          "shortcutEnabled",
-        ],
-        (data) => {
-          if (chrome.runtime.lastError) {
-            console.warn("[Yap Extension] Storage read error:", chrome.runtime.lastError.message);
-            resolve(settingsCache);
-            return;
-          }
-          applyStorageData({
-            baseUrl: data.baseUrl || DEFAULT_BASE_URL,
-            apiKey: data.apiKey || "",
-            model: data.model || DEFAULT_MODEL,
-            prompt: data.prompt !== undefined ? data.prompt : DEFAULT_PROMPT,
-            timeout: data.timeout,
-            visionMode: data.visionMode !== false,
-            translationPreview: data.translationPreview !== false,
-            shortcutEnabled: data.shortcutEnabled !== false,
-          });
-          settingsLoaded = true;
-          resolve(settingsCache);
+      if (!chrome.storage || !chrome.storage[area]) return resolve(null);
+      chrome.storage[area].get(keys, (data) => {
+        if (chrome.runtime.lastError) {
+          console.warn("[X AI Reply] Storage read error:", chrome.runtime.lastError.message);
+          return resolve(null);
         }
-      );
+        resolve(data || {});
+      });
     } catch (e) {
-      resolve(settingsCache);
+      resolve(null);
     }
   });
 }
 
+async function loadSettings() {
+  try {
+    const localData = await readStorageArea("local", SETTINGS_KEYS);
+    let source = null;
+
+    if (
+      localData &&
+      (localData._storageV2 === true ||
+        localData.apiKey !== undefined ||
+        localData.baseUrl !== undefined)
+    ) {
+      usingLocalStorageV2 = true;
+      source = localData;
+    } else {
+      const syncData = await readStorageArea("sync", SETTINGS_KEYS);
+      source = syncData || localData || {};
+    }
+
+    applyStorageData({
+      baseUrl: source.baseUrl || DEFAULT_BASE_URL,
+      apiKey: source.apiKey || "",
+      model: source.model || DEFAULT_MODEL,
+      prompt: source.prompt !== undefined ? source.prompt : DEFAULT_PROMPT,
+      timeout: source.timeout,
+      visionMode: source.visionMode !== false,
+      translationPreview: source.translationPreview !== false,
+      shortcutEnabled: source.shortcutEnabled !== false,
+      _storageV2: source._storageV2 === true,
+    });
+    settingsLoaded = true;
+  } catch (e) {}
+  return settingsCache;
+}
+
 try {
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== "sync") return;
-    const patch = {};
-    for (const key of Object.keys(changes)) {
-      patch[key] = changes[key].newValue;
+    if (area === "local") {
+      const relevant = SETTINGS_KEYS.some((k) => Object.prototype.hasOwnProperty.call(changes, k));
+      if (!relevant) return;
+      const patch = {};
+      for (const key of SETTINGS_KEYS) {
+        if (Object.prototype.hasOwnProperty.call(changes, key)) {
+          patch[key] = changes[key].newValue;
+        }
+      }
+      usingLocalStorageV2 = true;
+      applyStorageData(patch);
+      return;
     }
-    applyStorageData(patch);
+    if (area === "sync" && !usingLocalStorageV2) {
+      const patch = {};
+      for (const key of Object.keys(changes)) {
+        patch[key] = changes[key].newValue;
+      }
+      applyStorageData(patch);
+    }
   });
 } catch (e) {}
 
 function buildEndpoint(baseUrl) {
-  let url = (baseUrl || DEFAULT_BASE_URL).trim().replace(/\/+$/, "");
+  let url = normalizeBaseUrl(baseUrl || DEFAULT_BASE_URL);
   if (!/\/chat\/completions(\?.*)?$/i.test(url)) {
     url += "/chat/completions";
   }
@@ -849,11 +916,71 @@ function extractNodeTextWithEmojis(el) {
   return cleanText(walkNodeText(el));
 }
 
+const REPLYING_TO_RE =
+  /^(?:Replying to|Membalas|返信先|回复|回覆|Respondiendo a|En respuesta a|Respondendo a|Em resposta a|En réponse à|Antwort an|В ответ)|님에게 보내는 답글|yanıt olarak/i;
+
+function matchesExclude(el, excludeScope) {
+  if (!el || !excludeScope) return false;
+  if (typeof excludeScope === "function") return Boolean(excludeScope(el));
+  if (typeof excludeScope.contains === "function") return excludeScope.contains(el);
+  return false;
+}
+
+function isComposerMediaAttachment(el) {
+  if (!el || typeof el.closest !== "function") return false;
+  const attach = el.closest('[data-testid="attachments"]');
+  if (!attach) return false;
+  // A quoted post inside a Quote Modal has User-Name / tweetText / quoteTweet; a user's draft upload has a Remove button
+  if (attach.querySelector('[data-testid="User-Name"], [data-testid="tweetText"], [data-testid="quoteTweet"]')) {
+    return false;
+  }
+  if (
+    attach.querySelector(
+      '[data-testid="removeMediaButton"], button[aria-label*="Remove"], button[aria-label*="Hapus"], button[aria-label*="削除"], button[aria-label*="移除"], button[aria-label*="제거"]'
+    )
+  ) {
+    return true;
+  }
+  return Boolean(attach.querySelector('img[src^="blob:"]'));
+}
+
+function findComposerScope(replyBox, scopeRoot) {
+  const innerWrap =
+    replyBox?.closest?.(
+      '[data-testid="tweetTextarea_0RichTextInputContainer"], [data-testid^="tweetTextarea"], .DraftEditor-root'
+    ) || replyBox;
+  if (!replyBox) return innerWrap;
+  // Climb to composer wrapper containing the editor + submit button + draft media previews,
+  // stopping before the dialog or any post <article> / [data-testid="tweetText"]
+  let node = innerWrap?.parentElement || replyBox.parentElement;
+  let best = innerWrap;
+  for (let depth = 0; node && depth < 6; depth += 1, node = node.parentElement) {
+    if (
+      node === scopeRoot ||
+      node.tagName === "BODY" ||
+      node.tagName === "HTML" ||
+      node.tagName === "MAIN" ||
+      node.tagName === "ARTICLE" ||
+      node.getAttribute?.("role") === "dialog" ||
+      node.getAttribute?.("data-testid") === "primaryColumn"
+    ) {
+      break;
+    }
+    if (node.querySelector?.('article, [data-testid="tweetText"], [data-testid="User-Name"]')) {
+      break;
+    }
+    best = node;
+    if (node.querySelector?.('[data-testid^="tweetButton"]')) {
+      break;
+    }
+  }
+  return best || innerWrap;
+}
+
 function parseUserBlock(root, excludeScope) {
   if (!root) return { name: "", handle: "" };
   const userNodes = [...root.querySelectorAll('[data-testid="User-Name"]')];
-  const userEl =
-    userNodes.find((el) => !excludeScope || !excludeScope.contains(el)) || userNodes[0];
+  const userEl = userNodes.find((el) => !matchesExclude(el, excludeScope));
   if (userEl) {
     const raw = cleanText(userEl.innerText || userEl.textContent || "");
     const handleMatch = raw.match(/@([A-Za-z0-9_]{1,15})/);
@@ -868,8 +995,8 @@ function parseUserBlock(root, excludeScope) {
   // Fallback for redesigned X DOM where data-testid="User-Name" may be absent
   const links = root.querySelectorAll('a[href^="/"]');
   for (const a of links) {
-    if (excludeScope && excludeScope.contains(a)) continue;
-    if (a.closest?.('[data-testid^="card"], [role="group"], nav')) continue;
+    if (matchesExclude(a, excludeScope)) continue;
+    if (a.closest?.('[data-testid^="card"], [role="group"], nav, [data-testid="tweetText"]')) continue;
     const t = cleanText(a.textContent || "");
     if (/^@[A-Za-z0-9_]{1,15}$/.test(t)) {
       const parentText = cleanText(a.parentElement?.parentElement?.textContent || "");
@@ -922,15 +1049,15 @@ function isNonBodyUiLine(text, authorName = "", authorHandle = "") {
   }
 
   if (
-    /^(replying to|membalas|post your reply|what.?s happening|reply|post|quote|drafts|relevant|most relevant|most recent|most liked|everyone can reply|who can reply\??|promoted|ad)$/i.test(
+    /^(replying to|membalas|post your reply|what.?s happening|reply|post|quote|drafts|relevant|most relevant|most recent|most liked|everyone can reply|who can reply\??|promoted|ad|balas|posting|kutip|返信|ポスト|回复|回覆|답글|게시|responder|répondre|antworten)$/i.test(
       v
     )
   ) {
     return true;
   }
-  if (/^(replying to|membalas)\s+@/i.test(v)) return true;
+  if (REPLYING_TO_RE.test(v) && v.length < 160) return true;
   if (
-    /^(show more|show less|show this thread|translate post|show original|translated from\b.*|translated by\b.*|auto-translated\b.*|view|views|reposts|quotes|likes|bookmarks|follow|following|subscribe)$/i.test(
+    /^(show more|show less|show this thread|translate post|show original|translated from\b.*|translated by\b.*|auto-translated\b.*|view|views|reposts|quotes|likes|bookmarks|follow|following|subscribe|tampilkan lebih banyak|terjemahkan postingan|tampilkan yang asli|さらに表示|ポストを翻訳|原文を表示|显示更多|翻译帖子|더 보기|게시물 번역하기)$/i.test(
       v
     )
   ) {
@@ -953,11 +1080,7 @@ function isNonBodyUiLine(text, authorName = "", authorHandle = "") {
 
 function isExcludedSubtree(el, excludeScope) {
   if (!el || el.nodeType !== Node.ELEMENT_NODE) return true;
-  if (typeof excludeScope === "function") {
-    if (excludeScope(el)) return true;
-  } else if (excludeScope && excludeScope.contains(el)) {
-    return true;
-  }
+  if (matchesExclude(el, excludeScope)) return true;
   return Boolean(el.closest?.(FALLBACK_BODY_EXCLUDE_SELECTOR));
 }
 
@@ -1060,14 +1183,17 @@ function extractFallbackBodyText(root, excludeScope, authorInfo = {}) {
   return { text: dedupedB.join("\n"), lang: detectedLang };
 }
 
-function findQuoteContainer(article) {
+function findQuoteContainer(article, excludeScope = null) {
   if (!article) return null;
-  const explicit = article.querySelector('[data-testid="quoteTweet"]');
-  if (explicit) return explicit;
+  const explicits = article.querySelectorAll('[data-testid="quoteTweet"]');
+  for (const explicit of explicits) {
+    if (!matchesExclude(explicit, excludeScope)) return explicit;
+  }
 
   const roleLinks = article.querySelectorAll('div[role="link"]');
   for (const link of roleLinks) {
     if (link === article) continue;
+    if (matchesExclude(link, excludeScope)) continue;
     if (link.closest('[data-testid^="card"]')) continue;
     const hasUser = Boolean(link.querySelector('[data-testid="User-Name"]'));
     const hasBody = Boolean(
@@ -1081,8 +1207,15 @@ function findQuoteContainer(article) {
 }
 
 function extractPollOptions(root, excludeScope) {
-  const poll = root.querySelector('[data-testid="cardPoll"]');
-  if (!poll || (excludeScope && excludeScope.contains(poll))) return "";
+  const polls = root.querySelectorAll('[data-testid="cardPoll"]');
+  let poll = null;
+  for (const p of polls) {
+    if (!matchesExclude(p, excludeScope)) {
+      poll = p;
+      break;
+    }
+  }
+  if (!poll) return "";
 
   const optionEls = poll.querySelectorAll('[role="radio"], [data-testid^="choice"], li');
   const opts = [];
@@ -1095,18 +1228,16 @@ function extractPollOptions(root, excludeScope) {
 }
 
 function extractArticleLongform(root, excludeScope) {
-  const titleEl = root.querySelector('[data-testid="twitter-article-title"]');
-  const bodyEl = root.querySelector(
-    '[data-testid="twitterArticleRichTextView"], [data-testid="twitterArticleReadView"], [data-testid="longformRichTextComponent"]'
+  const titleEl = [...root.querySelectorAll('[data-testid="twitter-article-title"]')].find(
+    (el) => !matchesExclude(el, excludeScope)
   );
-  const title =
-    titleEl && (!excludeScope || !excludeScope.contains(titleEl))
-      ? truncateAtWord(extractNodeTextWithEmojis(titleEl), 160)
-      : "";
-  const body =
-    bodyEl && (!excludeScope || !excludeScope.contains(bodyEl))
-      ? truncateAtWord(extractNodeTextWithEmojis(bodyEl), 900)
-      : "";
+  const bodyEl = [
+    ...root.querySelectorAll(
+      '[data-testid="twitterArticleRichTextView"], [data-testid="twitterArticleReadView"], [data-testid="longformRichTextComponent"]'
+    ),
+  ].find((el) => !matchesExclude(el, excludeScope));
+  const title = titleEl ? truncateAtWord(extractNodeTextWithEmojis(titleEl), 160) : "";
+  const body = bodyEl ? truncateAtWord(extractNodeTextWithEmojis(bodyEl), 900) : "";
   return { title, body };
 }
 
@@ -1116,7 +1247,7 @@ function extractCardSummary(root, excludeScope) {
   );
   for (const card of cards) {
     if (card.getAttribute("data-testid") === "cardPoll") continue;
-    if (excludeScope && excludeScope.contains(card)) continue;
+    if (matchesExclude(card, excludeScope)) continue;
     const cardText = extractNodeTextWithEmojis(card);
     if (cardText && cardText.length > 8) {
       return truncateAtWord(cardText, 340);
@@ -1129,7 +1260,7 @@ function extractImageAlt(root, excludeScope) {
   const imgs = root.querySelectorAll('img[alt]:not([alt=""])');
   const alts = [];
   for (const img of imgs) {
-    if (excludeScope && excludeScope.contains(img)) continue;
+    if (matchesExclude(img, excludeScope) || isComposerMediaAttachment(img)) continue;
     if (img.closest('[data-testid^="Tweet-User-Avatar"], [data-testid="UserAvatar-Container"]')) {
       continue;
     }
@@ -1167,6 +1298,10 @@ function normalizeXMediaUrl(rawSrc) {
       if (u.searchParams.has("name") && currentName !== "orig" && currentName !== "4096x4096") {
         u.searchParams.set("name", "large");
       }
+      // Convert webp to jpg on X media CDN for universal Vision API compatibility
+      if ((u.searchParams.get("format") || "").toLowerCase() === "webp") {
+        u.searchParams.set("format", "jpg");
+      }
     }
     return u.toString();
   } catch (e) {
@@ -1195,11 +1330,8 @@ function extractImageUrls(root, excludeScope, maxCount = 4) {
   const urls = [];
   const isExcluded = (el) => {
     if (!el) return true;
-    if (typeof excludeScope === "function") {
-      if (excludeScope(el)) return true;
-    } else if (excludeScope && excludeScope.contains(el)) {
-      return true;
-    }
+    if (matchesExclude(el, excludeScope)) return true;
+    if (isComposerMediaAttachment(el)) return true;
     if (el.closest?.('[data-testid^="Tweet-User-Avatar"], [data-testid="UserAvatar-Container"]')) {
       return true;
     }
@@ -1254,20 +1386,30 @@ function extractImageUrls(root, excludeScope, maxCount = 4) {
 function detectMediaType(root, excludeScope, pollOptions, articleTitle) {
   if (pollOptions) return "Poll";
   if (articleTitle) return "X Longform Article";
-  const video = root.querySelector('[data-testid="videoPlayer"], video');
-  if (video && (!excludeScope || !excludeScope.contains(video))) return "Video Post";
-  const photo = root.querySelector('[data-testid="tweetPhoto"]');
-  if (photo && (!excludeScope || !excludeScope.contains(photo))) return "Image/Chart Post";
+  const videos = root.querySelectorAll('[data-testid="videoPlayer"], video');
+  for (const video of videos) {
+    if (!matchesExclude(video, excludeScope) && !isComposerMediaAttachment(video)) {
+      return "Video Post";
+    }
+  }
+  const photos = root.querySelectorAll('[data-testid="tweetPhoto"]');
+  for (const photo of photos) {
+    if (!matchesExclude(photo, excludeScope) && !isComposerMediaAttachment(photo)) {
+      return "Image/Chart Post";
+    }
+  }
   return "";
 }
 
-function extractReplyTo(root) {
-  if (!root) return "";
+function extractReplyTo(root, excludeScope = null) {
+  if (!root || typeof root.querySelectorAll !== "function") return "";
   const walker = root.querySelectorAll("span, div");
   for (const el of walker) {
+    if (matchesExclude(el, excludeScope)) continue;
+    if (el.closest?.('[data-testid="tweetText"]')) continue;
     if (el.children.length > 6) continue;
-    const t = cleanText(el.innerText);
-    if (/^(Replying to|Membalas)\b/i.test(t) && t.length < 140) {
+    const t = cleanText(el.innerText || el.textContent || "");
+    if (REPLYING_TO_RE.test(t) && t.length < 160 && /@[A-Za-z0-9_]{1,15}/.test(t)) {
       return t;
     }
   }
@@ -1302,7 +1444,7 @@ function extractDomLang(primaryNode, root, excludeScope) {
       '[data-testid="tweetText"][lang], [data-testid="tweetText"] [lang], [data-testid="twitterArticleRichTextView"][lang], [data-testid="longformRichTextComponent"][lang]'
     );
     for (const el of candidates) {
-      if (excludeScope && excludeScope.contains(el)) continue;
+      if (matchesExclude(el, excludeScope)) continue;
       if (el.tagName === "HTML" || el.tagName === "BODY") continue;
       const found = pickValid(el.getAttribute("lang"));
       if (found) return found;
@@ -1369,7 +1511,15 @@ function extractTranslationInfo(root, excludeScope) {
   if (!root || typeof root.querySelectorAll !== "function") return result;
   const nodes = root.querySelectorAll("span, div, button");
   for (const el of nodes) {
-    if (excludeScope && excludeScope.contains(el)) continue;
+    if (matchesExclude(el, excludeScope)) continue;
+    // Never mistake phrases inside the post body itself ("Show original", "Translated from Japanese") for X's UI banner
+    if (
+      el.closest?.(
+        '[data-testid="tweetText"], [data-testid="User-Name"], [data-testid="twitterArticleRichTextView"], [data-testid="longformRichTextComponent"]'
+      )
+    ) {
+      continue;
+    }
     if (el.children && el.children.length > 4) continue;
     const t = cleanText(el.textContent || "");
     if (!t || t.length > 100) continue;
@@ -1423,7 +1573,7 @@ function extractPostTimestamp(root, excludeScope) {
   if (!root || typeof root.querySelectorAll !== "function") return "";
   const times = root.querySelectorAll("time");
   for (const t of times) {
-    if (excludeScope && excludeScope.contains(t)) continue;
+    if (matchesExclude(t, excludeScope)) continue;
     const label = cleanText(t.textContent || t.getAttribute("datetime") || "");
     if (label) return label.slice(0, 48);
   }
@@ -1433,32 +1583,26 @@ function extractPostTimestamp(root, excludeScope) {
 function extractDataFromArticle(article, extraExcludeScope = null) {
   if (!article) return null;
 
-  const quoteRoot = findQuoteContainer(article);
+  const quoteRoot = findQuoteContainer(article, extraExcludeScope);
   const excludeMain = extraExcludeScope
-    ? (el) =>
-        Boolean(
-          (quoteRoot && quoteRoot.contains(el)) ||
-            (typeof extraExcludeScope === "function"
-              ? extraExcludeScope(el)
-              : extraExcludeScope.contains(el))
-        )
+    ? (el) => Boolean((quoteRoot && quoteRoot.contains(el)) || matchesExclude(el, extraExcludeScope))
     : quoteRoot;
 
-  const { name, handle } = parseUserBlock(article, quoteRoot);
+  const { name, handle } = parseUserBlock(article, excludeMain);
   const textNodes = [...article.querySelectorAll('[data-testid="tweetText"]')].filter(
     (n) => !isExcludedSubtree(n, excludeMain)
   );
   const mainTextNode = pickPrimaryTweetTextNode(textNodes);
 
   let tweetText = extractNodeTextWithEmojis(mainTextNode);
-  const longform = extractArticleLongform(article, quoteRoot);
+  const longform = extractArticleLongform(article, excludeMain);
   if (!tweetText && longform.body) {
     tweetText = longform.body;
   } else if (tweetText && longform.body && longform.body.length > tweetText.length + 30) {
     tweetText = longform.body;
   }
 
-  let tweetLang = extractDomLang(mainTextNode, article, quoteRoot);
+  let tweetLang = extractDomLang(mainTextNode, article, excludeMain);
 
   // Fallback for redesigned X DOM where data-testid="tweetText" may be renamed or omitted
   if (!tweetText) {
@@ -1469,29 +1613,32 @@ function extractDataFromArticle(article, extraExcludeScope = null) {
     }
   }
 
-  const { translatedFromLang, isAutoTranslated } = extractTranslationInfo(article, quoteRoot);
-  const pollOptions = extractPollOptions(article, quoteRoot);
-  const cardSummary = extractCardSummary(article, quoteRoot);
-  const imageAlt = extractImageAlt(article, quoteRoot);
+  const { translatedFromLang, isAutoTranslated } = extractTranslationInfo(article, excludeMain);
+  const pollOptions = extractPollOptions(article, excludeMain);
+  const cardSummary = extractCardSummary(article, excludeMain);
+  const imageAlt = extractImageAlt(article, excludeMain);
   const mainImageUrls = extractImageUrls(article, excludeMain, 4);
   const imageUrls = [...mainImageUrls];
   const mainImageCount = mainImageUrls.length;
-  const mediaType = detectMediaType(article, quoteRoot, pollOptions, longform.title);
-  const timestamp = extractPostTimestamp(article, quoteRoot);
+  const mediaType = detectMediaType(article, excludeMain, pollOptions, longform.title);
+  const timestamp = extractPostTimestamp(article, excludeMain);
 
   let quotedText = "";
   let quotedLang = "";
   if (quoteRoot) {
-    const qUser = parseUserBlock(quoteRoot, null);
+    const qUser = parseUserBlock(quoteRoot, extraExcludeScope);
     const qTextNode = quoteRoot.querySelector('[data-testid="tweetText"]');
-    quotedLang = extractDomLang(qTextNode, quoteRoot, null);
+    quotedLang = extractDomLang(qTextNode, quoteRoot, extraExcludeScope);
     let qBody = extractNodeTextWithEmojis(qTextNode);
     if (!qBody) {
-      const qFallback = extractFallbackBodyText(quoteRoot, null, qUser);
+      const qFallback = extractFallbackBodyText(quoteRoot, extraExcludeScope, qUser);
       qBody = qFallback.text;
       if (!quotedLang && qFallback.lang) quotedLang = qFallback.lang;
     }
-    qBody = qBody || extractCardSummary(quoteRoot, null) || extractImageAlt(quoteRoot, null);
+    qBody =
+      qBody ||
+      extractCardSummary(quoteRoot, extraExcludeScope) ||
+      extractImageAlt(quoteRoot, extraExcludeScope);
     if (qBody && qBody !== tweetText && qBody.length > 2) {
       const qPrefix =
         qUser.name || qUser.handle
@@ -1501,7 +1648,7 @@ function extractDataFromArticle(article, extraExcludeScope = null) {
     }
     // Also attach quote-tweet images (up to 4 total) so Vision understands quoted charts/memes too
     if (imageUrls.length < 4) {
-      const quoteImgs = extractImageUrls(quoteRoot, null, 4 - imageUrls.length);
+      const quoteImgs = extractImageUrls(quoteRoot, extraExcludeScope, 4 - imageUrls.length);
       for (const u of quoteImgs) {
         if (!imageUrls.includes(u) && imageUrls.length < 4) {
           imageUrls.push(u);
@@ -1510,9 +1657,11 @@ function extractDataFromArticle(article, extraExcludeScope = null) {
     }
   }
 
-  const replyTo = extractReplyTo(article);
-  const showMoreLink = article.querySelector('[data-testid="tweet-text-show-more-link"]');
-  const isTruncated = Boolean(showMoreLink && (!quoteRoot || !quoteRoot.contains(showMoreLink)));
+  const replyTo = extractReplyTo(article, excludeMain);
+  const showMoreLink = [...article.querySelectorAll('[data-testid="tweet-text-show-more-link"]')].find(
+    (el) => !matchesExclude(el, excludeMain)
+  );
+  const isTruncated = Boolean(showMoreLink);
 
   if (
     !tweetText &&
@@ -1607,17 +1756,13 @@ function extractComposerReplyTo(replyBox) {
 }
 
 function extractContextFromDialogNonArticle(dialog, replyBox) {
-  const composerWrap =
-    replyBox.closest(
-      '[data-testid="tweetTextarea_0RichTextInputContainer"], [data-testid^="tweetTextarea"], .DraftEditor-root'
-    ) || replyBox.parentElement;
+  const composerWrap = findComposerScope(replyBox, dialog);
 
-  const quoteRoot =
-    dialog.querySelector('[data-testid="quoteTweet"]') || findQuoteContainer(dialog);
+  const quoteRoot = findQuoteContainer(dialog, composerWrap);
   const excludeForMain = (el) =>
-    Boolean((composerWrap && composerWrap.contains(el)) || (quoteRoot && quoteRoot.contains(el)));
+    Boolean(matchesExclude(el, composerWrap) || (quoteRoot && quoteRoot.contains(el)));
 
-  const { name, handle } = parseUserBlock(dialog, composerWrap);
+  const { name, handle } = parseUserBlock(dialog, excludeForMain);
   const mainCandidates = [...dialog.querySelectorAll('[data-testid="tweetText"]')].filter(
     (el) => !excludeForMain(el)
   );
@@ -1630,12 +1775,12 @@ function extractContextFromDialogNonArticle(dialog, replyBox) {
     targetTextEl ||
     pickPrimaryTweetTextNode(
       [...fallbackScope.querySelectorAll('[data-testid="tweetText"]')].filter(
-        (el) => !composerWrap || !composerWrap.contains(el)
+        (el) => !matchesExclude(el, composerWrap)
       )
     );
 
   let tweetText = extractNodeTextWithEmojis(effectiveTextEl);
-  let tweetLang = extractDomLang(effectiveTextEl, dialog, composerWrap);
+  let tweetLang = extractDomLang(effectiveTextEl, dialog, excludeForMain);
 
   if (!tweetText) {
     const fb = extractFallbackBodyText(dialog, excludeForMain, { name, handle });
@@ -1645,28 +1790,42 @@ function extractContextFromDialogNonArticle(dialog, replyBox) {
     }
   }
 
-  const { translatedFromLang, isAutoTranslated } = extractTranslationInfo(dialog, composerWrap);
-  const pollOptions = extractPollOptions(dialog, composerWrap);
-  const cardSummary = extractCardSummary(dialog, composerWrap);
-  const imageAlt = extractImageAlt(dialog, composerWrap);
-  const imageUrls = extractImageUrls(dialog, composerWrap);
+  const { translatedFromLang, isAutoTranslated } = extractTranslationInfo(dialog, excludeForMain);
+  const pollOptions = extractPollOptions(dialog, excludeForMain);
+  const cardSummary = extractCardSummary(dialog, excludeForMain);
+  const imageAlt = extractImageAlt(dialog, excludeForMain);
+  const mainImageUrls = extractImageUrls(dialog, excludeForMain, 4);
+  const imageUrls = [...mainImageUrls];
+  const mainImageCount = mainImageUrls.length;
+  const timestamp = extractPostTimestamp(dialog, excludeForMain);
+  const showMoreLink = [...dialog.querySelectorAll('[data-testid="tweet-text-show-more-link"]')].find(
+    (el) => !excludeForMain(el)
+  );
 
   let quotedText = "";
   let quotedLang = "";
   if (quoteRoot && effectiveTextEl && !quoteRoot.contains(effectiveTextEl)) {
     const qTextNode = quoteRoot.querySelector('[data-testid="tweetText"]');
-    quotedLang = extractDomLang(qTextNode, quoteRoot, null);
+    quotedLang = extractDomLang(qTextNode, quoteRoot, composerWrap);
     const qBody =
       extractNodeTextWithEmojis(qTextNode) ||
-      extractCardSummary(quoteRoot, null) ||
-      extractImageAlt(quoteRoot, null);
+      extractCardSummary(quoteRoot, composerWrap) ||
+      extractImageAlt(quoteRoot, composerWrap);
     if (qBody && qBody !== tweetText && qBody.length > 1) {
-      const qUser = parseUserBlock(quoteRoot, null);
+      const qUser = parseUserBlock(quoteRoot, composerWrap);
       const qPrefix =
         qUser.name || qUser.handle
           ? `${[qUser.name, qUser.handle ? `(${qUser.handle})` : ""].filter(Boolean).join(" ")}: `
           : "";
       quotedText = truncateAtWord(qPrefix + qBody, 520);
+    }
+    if (imageUrls.length < 4) {
+      const quoteImgs = extractImageUrls(quoteRoot, composerWrap, 4 - imageUrls.length);
+      for (const u of quoteImgs) {
+        if (!imageUrls.includes(u) && imageUrls.length < 4) {
+          imageUrls.push(u);
+        }
+      }
     }
   }
 
@@ -1687,6 +1846,8 @@ function extractContextFromDialogNonArticle(dialog, replyBox) {
     tweetLang,
     translatedFromLang,
     isAutoTranslated,
+    isTruncated: Boolean(showMoreLink),
+    timestamp,
     articleTitle: "",
     pollOptions,
     quotedText,
@@ -1694,15 +1855,12 @@ function extractContextFromDialogNonArticle(dialog, replyBox) {
     cardSummary,
     imageAlt,
     imageUrls,
-    mediaType: detectMediaType(dialog, composerWrap, pollOptions, ""),
-    replyTo: extractReplyTo(dialog),
+    mainImageCount,
+    mediaType: detectMediaType(dialog, excludeForMain, pollOptions, ""),
+    replyTo: extractReplyTo(dialog, excludeForMain),
     parentContext: "",
+    selfThreadContinuation: "",
   };
-}
-
-function visibleText(el) {
-  if (!el) return "";
-  return cleanText(el.innerText || el.textContent || "");
 }
 
 function looksLikePostBody(text) {
@@ -1727,30 +1885,53 @@ function looksLikePostBody(text) {
   return true;
 }
 
+function isInsideReplyingToBanner(el) {
+  let node = el;
+  for (let depth = 0; node && depth < 4; depth += 1, node = node.parentElement) {
+    if (node.tagName === "ARTICLE" || node.tagName === "MAIN" || node.tagName === "BODY") break;
+    if (node.children && node.children.length > 8) break;
+    const t = cleanText(node.textContent || "");
+    if (t.length > 0 && t.length < 180 && REPLYING_TO_RE.test(t)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function findPostContainerByReplyHandle(replyBox, composerReplyTo, scope) {
   const handleMatch = String(composerReplyTo || "").match(/@([A-Za-z0-9_]{1,15})/);
   if (!handleMatch) return null;
   const targetHandle = `@${handleMatch[1].toLowerCase()}`;
   const anchorRect = replyBox.getBoundingClientRect();
   const root = scope || document.querySelector('[data-testid="primaryColumn"], main') || document;
+  const composerWrap = findComposerScope(replyBox, root);
 
   const candidates = root.querySelectorAll('a[href^="/"], span');
   let bestHandleNode = null;
-  let bestDist = Infinity;
+  let bestScore = Infinity;
 
   for (const el of candidates) {
-    if (el.closest?.('.x-ai-reply-group, .x-ai-toast-host, [data-testid="sidebarColumn"], aside, nav')) {
+    if (
+      el.closest?.(
+        '.x-ai-reply-group, .x-ai-toast-host, [data-testid="sidebarColumn"], aside, nav, [data-testid="tweetText"]'
+      )
+    ) {
       continue;
     }
-    if (replyBox.contains(el)) continue;
+    if (replyBox.contains(el) || matchesExclude(el, composerWrap)) continue;
     const t = cleanText(el.textContent || "").toLowerCase();
     if (t !== targetHandle) continue;
+    // Never lock onto the "Replying to @author" label sitting directly above the composer
+    if (isInsideReplyingToBanner(el)) continue;
     const rect = el.getBoundingClientRect();
     if (rect.width === 0 || rect.height === 0) continue;
     const dist = anchorRect.top - rect.bottom;
     if (dist < 10 || dist > 1600) continue;
-    if (dist < bestDist) {
-      bestDist = dist;
+    // Prefer actual author header blocks ([data-testid="User-Name"]) over stray handle links
+    const inUserHeader = Boolean(el.closest?.('[data-testid="User-Name"]'));
+    const score = inUserHeader ? dist - 250 : dist;
+    if (score < bestScore) {
+      bestScore = score;
       bestHandleNode = el;
     }
   }
@@ -1758,10 +1939,6 @@ function findPostContainerByReplyHandle(replyBox, composerReplyTo, scope) {
   if (!bestHandleNode) return null;
 
   // Climb from the author handle to the post wrapper (supports both separate and shared-wrapper X layouts)
-  const composerWrap =
-    replyBox.closest?.(
-      '[data-testid="tweetTextarea_0RichTextInputContainer"], [data-testid^="tweetTextarea"], .DraftEditor-root'
-    ) || replyBox;
   let container = bestHandleNode.parentElement;
   let bestContainer = null;
   let sharedParent = null;
@@ -1829,10 +2006,7 @@ function contextFromVisibleComposer(replyBox, composerReplyTo = "") {
     null;
   const primaryCol = !panel ? document.querySelector('[data-testid="primaryColumn"], main') : null;
   const scope = panel || primaryCol || document;
-  const composerWrap =
-    replyBox.closest?.(
-      '[data-testid="tweetTextarea_0RichTextInputContainer"], [data-testid^="tweetTextarea"], .DraftEditor-root'
-    ) || replyBox;
+  const composerWrap = findComposerScope(replyBox, scope);
 
   // Strategy 1: Anchor directly to the post container matching "Replying to @author" above the composer
   const replyToStr = composerReplyTo || extractComposerReplyTo(replyBox);
@@ -1887,7 +2061,7 @@ function contextFromVisibleComposer(replyBox, composerReplyTo = "") {
       dist = distAbove;
     }
 
-    if (/^(replying to|membalas)\b/i.test(text) && text.length < 160) {
+    if (REPLYING_TO_RE.test(text) && text.length < 160) {
       replyTo = replyTo || text;
       handle = (text.match(/@[\w_]+/) || [handle])[0] || handle;
       continue;
@@ -1923,16 +2097,24 @@ function contextFromVisibleComposer(replyBox, composerReplyTo = "") {
 
   const combinedText = dedupeParagraphLines(chosenBlocks.map((b) => b.text)).join("\n");
   const primaryEl = chosenBlocks[0]?.el || null;
-  const transScope = panel || primaryEl?.closest?.("article") || primaryCol || primaryEl?.parentElement;
+  // Never scan the entire primaryColumn for images — stay tightly scoped to the target post or modal
+  const postContainerScope =
+    panel ||
+    primaryEl?.closest?.('article, div[data-testid="tweet"], [data-testid="cellInnerDiv"]') ||
+    primaryEl?.parentElement ||
+    null;
   const excludeBelowComposer = (el) => {
-    if (composerWrap && composerWrap.contains(el)) return true;
+    if (matchesExclude(el, composerWrap)) return true;
     if (!panel && el.getBoundingClientRect) {
       const r = el.getBoundingClientRect();
       if (r.top >= anchorRect.top + 20) return true;
+      // When scanning a broader fallback scope, ignore images far above the target post
+      if (!postContainerScope && anchorRect.top - r.bottom > 950) return true;
     }
     return false;
   };
-  const imageAlt = transScope ? extractImageAlt(transScope, composerWrap) : "";
+  const transScope = postContainerScope;
+  const imageAlt = transScope ? extractImageAlt(transScope, excludeBelowComposer) : "";
   const imageUrls = transScope ? extractImageUrls(transScope, excludeBelowComposer, 4) : [];
 
   // Never hallucinate from a bare "Replying to @user" string with no actual post text or media
@@ -1944,7 +2126,9 @@ function contextFromVisibleComposer(replyBox, composerReplyTo = "") {
     rawLangNode && rawLangNode.tagName !== "HTML" && rawLangNode.tagName !== "BODY"
       ? rawLangNode
       : null;
-  const { translatedFromLang, isAutoTranslated } = extractTranslationInfo(transScope, composerWrap);
+  const { translatedFromLang, isAutoTranslated } = transScope
+    ? extractTranslationInfo(transScope, excludeBelowComposer)
+    : { translatedFromLang: "", isAutoTranslated: false };
 
   return {
     name,
@@ -1954,7 +2138,7 @@ function contextFromVisibleComposer(replyBox, composerReplyTo = "") {
     translatedFromLang,
     isAutoTranslated,
     isTruncated: false,
-    timestamp: transScope ? extractPostTimestamp(transScope, composerWrap) : "",
+    timestamp: transScope ? extractPostTimestamp(transScope, excludeBelowComposer) : "",
     articleTitle: "",
     pollOptions: "",
     quotedText: "",
@@ -1963,7 +2147,7 @@ function contextFromVisibleComposer(replyBox, composerReplyTo = "") {
     imageAlt,
     imageUrls,
     mainImageCount: imageUrls.length,
-    mediaType: transScope ? detectMediaType(transScope, composerWrap, "", "") : "",
+    mediaType: transScope ? detectMediaType(transScope, excludeBelowComposer, "", "") : "",
     replyTo,
     parentContext: "",
     selfThreadContinuation: "",
@@ -1974,30 +2158,50 @@ function enrichIfTextMissing(extracted, replyBox, composerReplyTo) {
   if (!extracted) return extracted;
   const missingText =
     !extracted.tweetText && !extracted.articleTitle && !extracted.quotedText && !extracted.pollOptions;
-  const missingImages = !Array.isArray(extracted.imageUrls) || extracted.imageUrls.length === 0;
-  if (!missingText && !missingImages) {
+  const expectsMedia =
+    extracted.mediaType === "Image/Chart Post" || extracted.mediaType === "Video Post";
+  const missingExpectedImages =
+    expectsMedia && (!Array.isArray(extracted.imageUrls) || extracted.imageUrls.length === 0);
+
+  // Never scan surrounding timeline for images on a normal text-only post (prevents cross-tweet image pollution!)
+  if (!missingText && !missingExpectedImages) {
     return extracted;
   }
+
   // Recover missing post text or sibling images if redesigned X DOM split them outside <article>
   const recovered = contextFromVisibleComposer(replyBox, composerReplyTo);
   if (!recovered) return extracted;
+
+  const sameAuthor =
+    !extracted.handle ||
+    !recovered.handle ||
+    extracted.handle.toLowerCase() === recovered.handle.toLowerCase();
+
   return {
     ...extracted,
-    tweetText: extracted.tweetText || recovered.tweetText,
-    tweetLang: extracted.tweetLang || recovered.tweetLang,
+    tweetText: extracted.tweetText || (sameAuthor ? recovered.tweetText : ""),
+    tweetLang: extracted.tweetLang || (sameAuthor ? recovered.tweetLang : ""),
     name: extracted.name || recovered.name,
     handle: extracted.handle || recovered.handle,
-    translatedFromLang: extracted.translatedFromLang || recovered.translatedFromLang,
-    isAutoTranslated: extracted.isAutoTranslated || recovered.isAutoTranslated,
-    imageAlt: extracted.imageAlt || recovered.imageAlt,
+    translatedFromLang: extracted.translatedFromLang || (sameAuthor ? recovered.translatedFromLang : ""),
+    isAutoTranslated: extracted.isAutoTranslated || (sameAuthor ? recovered.isAutoTranslated : false),
+    imageAlt: extracted.imageAlt || (sameAuthor ? recovered.imageAlt : ""),
     imageUrls:
       Array.isArray(extracted.imageUrls) && extracted.imageUrls.length > 0
         ? extracted.imageUrls
-        : recovered.imageUrls || [],
+        : sameAuthor
+          ? recovered.imageUrls || []
+          : [],
     mainImageCount:
-      extracted.mainImageCount || (Array.isArray(recovered.imageUrls) ? recovered.imageUrls.length : 0),
-    mediaType: extracted.mediaType || recovered.mediaType,
+      extracted.mainImageCount ||
+      (sameAuthor && Array.isArray(recovered.imageUrls) ? recovered.imageUrls.length : 0),
+    mediaType: extracted.mediaType || (sameAuthor ? recovered.mediaType : ""),
   };
+}
+
+function filterTopLevelTweets(nodes) {
+  if (!Array.isArray(nodes) || nodes.length <= 1) return nodes || [];
+  return nodes.filter((el) => !nodes.some((other) => other !== el && other.contains(el)));
 }
 
 function getPostContext(replyBox) {
@@ -2029,9 +2233,9 @@ function getPostContext(replyBox) {
   // 1. Modal Dialog (Reply / Quote Tweet / Thread Reply)
   const dialog = replyBox.closest('[role="dialog"], dialog[open]');
   if (dialog) {
-    const articles = [
+    const articles = filterTopLevelTweets([
       ...dialog.querySelectorAll('article[data-testid="tweet"], article, div[data-testid="tweet"]'),
-    ];
+    ]);
     if (articles.length > 0) {
       const boxRect = replyBox.getBoundingClientRect();
       let chosenIdx = articles.length - 1;
@@ -2086,9 +2290,15 @@ function getPostContext(replyBox) {
 
   // 3. Status detail page (/status/<id>) — prioritize the primary focal tweet inside primaryColumn/main
   const mainScope = document.querySelector('[data-testid="primaryColumn"], main') || document;
-  const allTweets = [
-    ...mainScope.querySelectorAll('article[data-testid="tweet"], article, div[data-testid="tweet"]'),
-  ].filter((el) => !el.closest?.('[data-testid="sidebarColumn"], aside'));
+  const allTweets = filterTopLevelTweets(
+    [
+      ...mainScope.querySelectorAll('article[data-testid="tweet"], article, div[data-testid="tweet"]'),
+    ].filter((el) => !el.closest?.('[data-testid="sidebarColumn"], aside'))
+  );
+
+  const boxRect = replyBox.getBoundingClientRect();
+  const replyHandleMatch = composerReplyTo.match(/@([A-Za-z0-9_]{1,15})/);
+  const targetHandleLower = replyHandleMatch ? `@${replyHandleMatch[1].toLowerCase()}` : "";
 
   const statusMatch = location.pathname.match(/\/status\/(\d+)/);
   if (statusMatch) {
@@ -2098,32 +2308,40 @@ function getPostContext(replyBox) {
       allTweets.find((art) => Boolean(art.querySelector(`a[href*="/status/${statusId}"] time`))) ||
       allTweets.find((art) => Boolean(art.querySelector(`a[href*="/status/${statusId}"]`)));
     if (mainFocalTweet) {
-      const extracted = enrichIfTextMissing(
-        extractDataFromArticle(mainFocalTweet),
-        replyBox,
-        composerReplyTo
-      );
-      if (extracted) {
-        if (!extracted.replyTo && composerReplyTo) extracted.replyTo = composerReplyTo;
-        const focalIdx = allTweets.indexOf(mainFocalTweet);
-        if (focalIdx > 0) {
-          extracted.parentContext = buildParentThreadSummary(allTweets.slice(0, focalIdx));
+      const focalRect = mainFocalTweet.getBoundingClientRect();
+      const focalAboveComposer = focalRect.bottom <= boxRect.top + 120;
+      const focalUser = parseUserBlock(mainFocalTweet, findQuoteContainer(mainFocalTweet));
+      const handleMatchesFocal =
+        !targetHandleLower ||
+        !focalUser.handle ||
+        focalUser.handle.toLowerCase() === targetHandleLower ||
+        boxRect.top - focalRect.bottom <= 220;
+
+      if (focalAboveComposer && handleMatchesFocal) {
+        const extracted = enrichIfTextMissing(
+          extractDataFromArticle(mainFocalTweet),
+          replyBox,
+          composerReplyTo
+        );
+        if (extracted) {
+          if (!extracted.replyTo && composerReplyTo) extracted.replyTo = composerReplyTo;
+          const focalIdx = allTweets.indexOf(mainFocalTweet);
+          if (focalIdx > 0) {
+            extracted.parentContext = buildParentThreadSummary(allTweets.slice(0, focalIdx));
+          }
+          if (focalIdx >= 0 && focalIdx < allTweets.length - 1 && extracted.handle) {
+            extracted.selfThreadContinuation = buildSelfThreadContinuation(
+              allTweets.slice(focalIdx + 1),
+              extracted.handle
+            );
+          }
+          return extracted;
         }
-        if (focalIdx >= 0 && focalIdx < allTweets.length - 1 && extracted.handle) {
-          extracted.selfThreadContinuation = buildSelfThreadContinuation(
-            allTweets.slice(focalIdx + 1),
-            extracted.handle
-          );
-        }
-        return extracted;
       }
     }
   }
 
   // 4. Fallback: nearest tweet directly above the reply composer (bounded within 900px to cover tall image posts)
-  const boxRect = replyBox.getBoundingClientRect();
-  const replyHandleMatch = composerReplyTo.match(/@([A-Za-z0-9_]{1,15})/);
-  const targetHandleLower = replyHandleMatch ? `@${replyHandleMatch[1].toLowerCase()}` : "";
   let bestIdx = -1;
   let bestScore = Infinity;
 
@@ -2373,6 +2591,7 @@ function cleanupOrphanButtons() {
     const box = group.__xAiBox;
     const anchor = group.__xAiAnchor;
     if (!group.isConnected || !anchor || !anchor.isConnected) {
+      if (typeof group.__xAiClearMenuTimer === "function") group.__xAiClearMenuTimer();
       group.remove();
       mountedGroups.delete(group);
       if (box) boxButtonMap.delete(box);
@@ -2383,6 +2602,7 @@ function cleanupOrphanButtons() {
     if (!box || !box.isConnected) {
       const freshBox = resolveLiveComposerForGroup(group);
       if (!freshBox) {
+        if (typeof group.__xAiClearMenuTimer === "function") group.__xAiClearMenuTimer();
         group.remove();
         mountedGroups.delete(group);
         if (box) boxButtonMap.delete(box);
@@ -2415,7 +2635,13 @@ function isSubmitButton(el) {
   if (el.closest?.('article [role="group"]')) return false;
   // Use textContent/aria-label instead of innerText to avoid forced layout reflows
   const label = (el.getAttribute("aria-label") || el.textContent || "").replace(/\s+/g, " ").trim();
-  if (!/^(reply|post|quote)$/i.test(label)) return false;
+  if (
+    !/^(reply|post|quote|balas|posting|kutip|返信|ポスト|回复|回覆|发帖|답글|게시하기|responder|répondre|antworten)$/i.test(
+      label
+    )
+  ) {
+    return false;
+  }
   const rect = el.getBoundingClientRect();
   return rect.width >= 36 && rect.width <= 180 && rect.height >= 24 && rect.height <= 64;
 }
@@ -2423,6 +2649,7 @@ function isSubmitButton(el) {
 function findReplyActionButtons(root) {
   if (/^\/messages(\/|$)|\/i\/grok|\/grok/i.test(location.pathname)) return [];
   const scope = root && (root.querySelectorAll || root instanceof ShadowRoot) ? root : document;
+  if (!hasAnyComposerHintInDom(scope)) return [];
 
   // Fast path: match X's explicit tweet/reply submit testids without scanning every button on the page
   const fastNodes = queryDeep(
@@ -2440,7 +2667,7 @@ function findReplyActionButtons(root) {
   }
   if (hits.length > 0) return hits;
 
-  // Fallback path only if explicit testids are absent (e.g. future X UI rename)
+  // Fallback path only if explicit testids are absent and an editable composer actually exists
   const fallbackNodes = queryDeep(scope, 'button, [role="button"]');
   for (const node of fallbackNodes) {
     if (!isSubmitButton(node) || seen.has(node)) continue;
@@ -2499,8 +2726,8 @@ function findEditorNear(anchor) {
 function insertButtonIntoReplyBoxes() {
   cleanupOrphanButtons();
 
-  const replyBoxes = queryComposerBoxes(document);
   const anchors = findReplyActionButtons(document);
+  const replyBoxes = anchors.length > 0 ? [] : queryComposerBoxes(document);
   if (replyBoxes.length === 0 && anchors.length === 0) return;
 
   injectStyles();
@@ -2549,16 +2776,20 @@ function insertButtonIntoReplyBoxes() {
     setButtonVisualState(btn, "idle");
 
     let closeMenuTimer = null;
-    const openAngleMenu = () => {
+    const clearMenuTimer = () => {
       if (closeMenuTimer) {
         clearTimeout(closeMenuTimer);
         closeMenuTimer = null;
       }
+    };
+    group.__xAiClearMenuTimer = clearMenuTimer;
+    const openAngleMenu = () => {
+      clearMenuTimer();
       if (btn.dataset.loading === "true") return;
       group.dataset.open = "true";
     };
     const scheduleCloseAngleMenu = () => {
-      if (closeMenuTimer) clearTimeout(closeMenuTimer);
+      clearMenuTimer();
       closeMenuTimer = setTimeout(() => {
         closeMenuTimer = null;
         delete group.dataset.open;
@@ -2566,10 +2797,7 @@ function insertButtonIntoReplyBoxes() {
     };
 
     const triggerGeneration = (selectedAngle) => {
-      if (closeMenuTimer) {
-        clearTimeout(closeMenuTimer);
-        closeMenuTimer = null;
-      }
+      clearMenuTimer();
       delete group.dataset.open;
       if (btn.dataset.loading === "true") return;
       const liveBox = resolveLiveComposerForGroup(group) || box;
@@ -2580,7 +2808,6 @@ function insertButtonIntoReplyBoxes() {
         });
         return;
       }
-      setButtonVisualState(btn, "loading");
       generateText(liveBox, btn, liveBox.parentElement, selectedAngle);
     };
 
@@ -2659,8 +2886,54 @@ function dedupeRepeatedText(text) {
   return s;
 }
 
+function stripMatchingOuterQuotes(text) {
+  let s = String(text || "").trim();
+  const pairs = [
+    ['"', '"'],
+    ["'", "'"],
+    ["“", "”"],
+    ["‘", "’"],
+    ["「", "」"],
+    ["『", "』"],
+    ["`", "`"],
+  ];
+  let changed = true;
+  while (changed && s.length >= 2) {
+    changed = false;
+    for (const [open, close] of pairs) {
+      if (s.startsWith(open) && s.endsWith(close)) {
+        s = s.slice(open.length, s.length - close.length).trim();
+        changed = true;
+        break;
+      }
+    }
+  }
+  return s;
+}
+
+function extractMessageContentString(raw) {
+  if (typeof raw === "string") return raw;
+  if (Array.isArray(raw)) {
+    return raw
+      .map((part) => {
+        if (typeof part === "string") return part;
+        if (part && typeof part === "object") {
+          return typeof part.text === "string"
+            ? part.text
+            : typeof part.content === "string"
+              ? part.content
+              : "";
+        }
+        return "";
+      })
+      .filter(Boolean)
+      .join(" ");
+  }
+  return "";
+}
+
 function cleanModelReply(rawText) {
-  let cleaned = String(rawText || "");
+  let cleaned = extractMessageContentString(rawText);
   cleaned = cleaned.replace(/<think>[\s\S]*?<\/think>/gi, "");
   cleaned = cleaned.replace(/<thinking>[\s\S]*?<\/thinking>/gi, "");
 
@@ -2668,11 +2941,12 @@ function cleanModelReply(rawText) {
     return "";
   }
 
-  cleaned = cleaned
-    .replace(/\r?\n+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/^["'“”‘’「」『』`]+|["'“”‘’「」『』`]+$/g, "")
+  cleaned = stripMatchingOuterQuotes(
+    cleaned
+      .replace(/\r?\n+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+  )
     .replace(/[.。!！]+$/g, "")
     .trim();
 
@@ -2747,6 +3021,7 @@ async function generateText(box, btn, mountContainer, angle = "auto") {
     const post = getPostContext(box);
     const hasReadableText = Boolean(
       post.tweetText ||
+        post.selfThreadContinuation ||
         post.articleTitle ||
         post.pollOptions ||
         post.quotedText ||
@@ -2772,8 +3047,9 @@ async function generateText(box, btn, mountContainer, angle = "auto") {
 
     isGenerating = true;
     acquiredLock = true;
+    setButtonVisualState(btn, "loading");
 
-    const timeoutMs = Math.round(settingsCache.timeout * 1000);
+    const timeoutMs = Math.round(clampTimeoutSec(settingsCache.timeout) * 1000);
     const selectedAngle = angle && angle !== "auto" ? angle : "auto";
 
     const result = await sendMessageSafe(
@@ -2788,7 +3064,7 @@ async function generateText(box, btn, mountContainer, angle = "auto") {
         visionMode: settingsCache.visionMode,
         post,
       },
-      timeoutMs + 25000
+      Math.min(timeoutMs * 2 + 30000, 360000)
     );
 
     // Update rate limit timestamp regardless of success/failure to prevent spam
@@ -2811,7 +3087,7 @@ async function generateText(box, btn, mountContainer, angle = "auto") {
     }
 
     const messageObj = result.data?.choices?.[0]?.message;
-    let rawReply = messageObj?.content;
+    let rawReply = extractMessageContentString(messageObj?.content);
 
     if (!rawReply && typeof result.data?.choices?.[0]?.text === "string") {
       rawReply = result.data.choices[0].text;
@@ -2833,7 +3109,13 @@ async function generateText(box, btn, mountContainer, angle = "auto") {
 
     const insertResult = await insertTextProperly(box, replyText, mountContainer);
     if (!insertResult || !insertResult.ok) {
-      showToast("The reply box was closed before generation completed.", {
+      const reasonMsg =
+        insertResult?.method === "focus_failed"
+          ? "Could not focus the reply box. Click inside it and try again."
+          : insertResult?.method === "insert_failed"
+            ? "Could not insert the reply into the editor. Please try again."
+            : "The reply box was closed before generation completed.";
+      showToast(reasonMsg, {
         type: "warn",
       });
       return;
@@ -3018,8 +3300,14 @@ function editorHasExpectedText(actual, expected) {
   const normActual = normalizeForCompare(actual);
   const normExpected = normalizeForCompare(expected);
   if (!normActual || !normExpected) return false;
-  const sample = normExpected.slice(0, Math.min(10, normExpected.length));
-  return normActual.includes(sample);
+  if (normActual.length < Math.max(1, Math.floor(normExpected.length * 0.65))) return false;
+  const headSample = normExpected.slice(0, Math.min(10, normExpected.length));
+  if (!normActual.includes(headSample)) return false;
+  if (normExpected.length > 14) {
+    const tailSample = normExpected.slice(-Math.min(8, normExpected.length));
+    if (!normActual.includes(tailSample)) return false;
+  }
+  return true;
 }
 
 async function copyToClipboardFallback(text) {
@@ -3129,8 +3417,13 @@ async function insertTextProperly(el, text, fallbackScope) {
     try {
       const prevented = dispatchPasteText(el, text);
       await waitFrames(28);
-      const afterPaste = getEditorText(el);
-      if (prevented || editorHasExpectedText(afterPaste, expectedClean)) {
+      let afterPaste = getEditorText(el);
+      if (!editorHasExpectedText(afterPaste, expectedClean) && prevented) {
+        // Give async Draft.js/Lexical paste handlers a moment before falling back
+        await waitFrames(65);
+        afterPaste = getEditorText(el);
+      }
+      if (editorHasExpectedText(afterPaste, expectedClean)) {
         handledByPaste = true;
       }
     } catch (e) {

@@ -34,13 +34,31 @@ let currentConfig = { ...DEFAULTS };
 let profilesList = [];
 let activeProfileId = "";
 let toneHintTimer = null;
+let permCheckSeq = 0;
+let selfWriteDepth = 0;
 
 function $(id) {
   return document.getElementById(id);
 }
 
+function clampTimeout(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return DEFAULTS.timeout;
+  return Math.min(Math.max(Math.round(n), 5), 180);
+}
+
+function normalizeBaseUrl(raw) {
+  let v = String(raw || "").trim();
+  if (!v) return DEFAULTS.baseUrl;
+  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(v)) {
+    const isLocal = /^(localhost|127\.0\.0\.1|0\.0\.0\.0|192\.168\.|10\.)/i.test(v);
+    v = (isLocal ? "http://" : "https://") + v;
+  }
+  return v.replace(/\/+$/, "");
+}
+
 function buildEndpoint(baseUrl) {
-  let url = String(baseUrl || DEFAULTS.baseUrl).trim().replace(/\/+$/, "");
+  let url = normalizeBaseUrl(baseUrl || DEFAULTS.baseUrl);
   if (!/\/chat\/completions(\?.*)?$/i.test(url)) {
     url += "/chat/completions";
   }
@@ -49,12 +67,57 @@ function buildEndpoint(baseUrl) {
 
 function parseBaseOrigin(baseUrl) {
   try {
-    const u = new URL(baseUrl);
+    const u = new URL(normalizeBaseUrl(baseUrl));
     if (!/^https?:$/.test(u.protocol)) return null;
     return { host: u.host, pattern: u.origin + "/*" };
   } catch (e) {
     return null;
   }
+}
+
+function readArea(area, defaultsObj) {
+  return new Promise((resolve) => {
+    try {
+      if (!chrome.storage || !chrome.storage[area]) return resolve(null);
+      chrome.storage[area].get(defaultsObj, (data) => {
+        if (chrome.runtime.lastError) return resolve(null);
+        resolve(data || {});
+      });
+    } catch (e) {
+      resolve(null);
+    }
+  });
+}
+
+function writeLocalConfig(payload, callback) {
+  selfWriteDepth += 1;
+  const fullPayload = { ...payload, _storageV2: true };
+  chrome.storage.local.set(fullPayload, () => {
+    const err = chrome.runtime.lastError;
+    setTimeout(() => {
+      selfWriteDepth = Math.max(0, selfWriteDepth - 1);
+    }, 120);
+    if (typeof callback === "function") callback(err || null);
+  });
+}
+
+async function loadConfigWithMigration() {
+  const keys = { ...DEFAULTS, _storageV2: false };
+  const localData = await readArea("local", keys);
+  if (
+    localData &&
+    (localData._storageV2 === true ||
+      (Array.isArray(localData.profiles) && localData.profiles.length > 0) ||
+      Boolean(localData.apiKey))
+  ) {
+    return localData;
+  }
+  const syncData = await readArea("sync", DEFAULTS);
+  const merged = syncData || localData || { ...DEFAULTS };
+  if (syncData && (syncData.apiKey || (Array.isArray(syncData.profiles) && syncData.profiles.length > 0))) {
+    writeLocalConfig(merged);
+  }
+  return merged;
 }
 
 function extractUpstreamError(data) {
@@ -128,26 +191,17 @@ function renderProfileStrip() {
 
 function activatePopupProfile(prof) {
   activeProfileId = prof.id;
-  currentConfig.baseUrl = prof.baseUrl || DEFAULTS.baseUrl;
+  currentConfig.baseUrl = normalizeBaseUrl(prof.baseUrl || DEFAULTS.baseUrl);
   currentConfig.apiKey = prof.apiKey || "";
   currentConfig.model = prof.model || DEFAULTS.model;
   currentConfig.prompt = prof.prompt !== undefined ? prof.prompt : DEFAULTS.prompt;
-  currentConfig.timeout = Number(prof.timeout) > 0 ? Number(prof.timeout) : DEFAULTS.timeout;
-
-  const parsed = parseBaseOrigin(currentConfig.baseUrl);
-  if (parsed && chrome.permissions && chrome.permissions.request) {
-    try {
-      chrome.permissions.request({ origins: [parsed.pattern] }, () => {
-        void chrome.runtime.lastError;
-        renderState();
-      });
-    } catch (e) {}
-  }
+  currentConfig.timeout = clampTimeout(prof.timeout);
 
   const displayName =
     prof.name === "Profil Utama" ? "Main Profile" : prof.name || "Profile";
 
-  chrome.storage.sync.set(
+  // Persist first so switching never gets interrupted if the new profile needs host permission
+  writeLocalConfig(
     {
       baseUrl: currentConfig.baseUrl,
       apiKey: currentConfig.apiKey,
@@ -156,8 +210,11 @@ function activatePopupProfile(prof) {
       timeout: currentConfig.timeout,
       activeProfileId: prof.id,
     },
-    () => {
-      void chrome.runtime.lastError;
+    (err) => {
+      if (err) {
+        setFeedback("Failed to switch profile: " + err.message, "error");
+        return;
+      }
       renderProfileStrip();
       renderState();
       setFeedback(`✓ Switched to "${displayName}"`, "ok");
@@ -166,7 +223,8 @@ function activatePopupProfile(prof) {
 }
 
 function renderState() {
-  const base = (currentConfig.baseUrl || DEFAULTS.baseUrl).trim();
+  const reqSeq = ++permCheckSeq;
+  const base = normalizeBaseUrl(currentConfig.baseUrl || DEFAULTS.baseUrl);
   const parsed = parseBaseOrigin(base);
   const hasKey = Boolean(currentConfig.apiKey && currentConfig.apiKey.trim());
 
@@ -204,6 +262,7 @@ function renderState() {
 
   chrome.permissions.contains({ origins: [parsed.pattern] }, (granted) => {
     void chrome.runtime.lastError;
+    if (reqSeq !== permCheckSeq) return;
     if (!granted) {
       $("permBannerText").textContent = `Host access to ${parsed.host} is not active.`;
       permBanner.dataset.visible = "true";
@@ -223,44 +282,46 @@ function renderState() {
   });
 }
 
-function loadPopupData() {
-  chrome.storage.sync.get(DEFAULTS, (data) => {
-    if (chrome.runtime.lastError) return;
-    currentConfig = {
-      baseUrl: data.baseUrl || DEFAULTS.baseUrl,
-      apiKey: data.apiKey || "",
-      model: data.model || DEFAULTS.model,
-      prompt: data.prompt !== undefined ? upgradeLegacyPrompt(data.prompt) : DEFAULTS.prompt,
-      timeout: Number(data.timeout) > 0 ? Number(data.timeout) : DEFAULTS.timeout,
-      visionMode: data.visionMode !== false,
-      translationPreview: data.translationPreview !== false,
-      shortcutEnabled: data.shortcutEnabled !== false,
-    };
+async function loadPopupData() {
+  const data = await loadConfigWithMigration();
+  currentConfig = {
+    baseUrl: normalizeBaseUrl(data.baseUrl || DEFAULTS.baseUrl),
+    apiKey: data.apiKey || "",
+    model: data.model || DEFAULTS.model,
+    prompt: data.prompt !== undefined ? upgradeLegacyPrompt(data.prompt) : DEFAULTS.prompt,
+    timeout: clampTimeout(data.timeout),
+    visionMode: data.visionMode !== false,
+    translationPreview: data.translationPreview !== false,
+    shortcutEnabled: data.shortcutEnabled !== false,
+  };
 
-    if (Array.isArray(data.profiles) && data.profiles.length > 0) {
-      profilesList = data.profiles.map((p) => ({
-        ...p,
-        prompt: p.prompt !== undefined ? upgradeLegacyPrompt(p.prompt) : DEFAULTS.prompt,
-      }));
-      activeProfileId =
-        profilesList.some((p) => p.id === data.activeProfileId)
-          ? data.activeProfileId
-          : profilesList[0].id;
-    } else {
-      profilesList = [];
-      activeProfileId = "";
-    }
+  if (Array.isArray(data.profiles) && data.profiles.length > 0) {
+    profilesList = data.profiles.map((p) => ({
+      ...p,
+      baseUrl: normalizeBaseUrl(p.baseUrl || DEFAULTS.baseUrl),
+      prompt: p.prompt !== undefined ? upgradeLegacyPrompt(p.prompt) : DEFAULTS.prompt,
+      timeout: clampTimeout(p.timeout),
+    }));
+    activeProfileId =
+      profilesList.some((p) => p.id === data.activeProfileId)
+        ? data.activeProfileId
+        : profilesList[0].id;
+  } else {
+    profilesList = [];
+    activeProfileId = "";
+  }
 
-    renderProfileStrip();
-    renderState();
-  });
+  renderProfileStrip();
+  renderState();
 }
 
 function toggleBooleanFlag(key) {
   currentConfig[key] = !currentConfig[key];
   syncFeatureButtons();
-  chrome.storage.sync.set({ [key]: currentConfig[key] }, () => {
-    void chrome.runtime.lastError;
+  writeLocalConfig({ [key]: currentConfig[key] }, (err) => {
+    if (err) {
+      setFeedback("Failed to save setting: " + err.message, "error");
+    }
   });
 }
 
@@ -313,8 +374,11 @@ document.addEventListener("DOMContentLoaded", () => {
         }
       }
 
-      chrome.storage.sync.set(patch, () => {
-        if (chrome.runtime.lastError) return;
+      writeLocalConfig(patch, (err) => {
+        if (err) {
+          setFeedback("Failed to save tone: " + err.message, "error");
+          return;
+        }
         const hint = $("toneSavedHint");
         hint.dataset.show = "true";
         clearTimeout(toneHintTimer);
@@ -349,7 +413,7 @@ document.addEventListener("DOMContentLoaded", () => {
           endpoint: buildEndpoint(currentConfig.baseUrl),
           apiKey: currentConfig.apiKey.trim(),
           model: currentConfig.model || DEFAULTS.model,
-          timeoutMs: Math.min(Math.max(currentConfig.timeout, 5), 180) * 1000,
+          timeoutMs: clampTimeout(currentConfig.timeout) * 1000,
         },
         (res) => {
           btn.disabled = false;
@@ -375,20 +439,31 @@ document.addEventListener("DOMContentLoaded", () => {
       );
     };
 
-    if (chrome.permissions && chrome.permissions.request) {
-      chrome.permissions.request({ origins: [parsed.pattern] }, (granted) => {
+    // Check permission via contains() first so Test API never triggers a dialog that closes the popup mid-test
+    if (chrome.permissions && chrome.permissions.contains) {
+      chrome.permissions.contains({ origins: [parsed.pattern] }, (granted) => {
         void chrome.runtime.lastError;
         if (!granted) {
           btn.disabled = false;
           btn.textContent = "Test API";
-          setFeedback(`Host access to ${parsed.host} was denied.`, "warn");
+          renderState();
+          setFeedback(
+            `Host access to ${parsed.host} is required first — click "Allow Host" above.`,
+            "warn"
+          );
           return;
         }
-        renderState();
         runPing();
       });
     } else {
       runPing();
     }
   });
+
+  try {
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== "local" || selfWriteDepth > 0) return;
+      loadPopupData();
+    });
+  } catch (e) {}
 });

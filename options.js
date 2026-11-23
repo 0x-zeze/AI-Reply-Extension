@@ -34,6 +34,55 @@ function upgradeLegacyPrompt(value) {
 
 let profilesState = [];
 let activeProfileId = "";
+let permCheckSeq = 0;
+let selfWriteDepth = 0;
+
+function readArea(area, defaultsObj) {
+  return new Promise((resolve) => {
+    try {
+      if (!chrome.storage || !chrome.storage[area]) return resolve(null);
+      chrome.storage[area].get(defaultsObj, (data) => {
+        if (chrome.runtime.lastError) return resolve(null);
+        resolve(data || {});
+      });
+    } catch (e) {
+      resolve(null);
+    }
+  });
+}
+
+function writeLocalConfig(payload, callback) {
+  selfWriteDepth += 1;
+  const fullPayload = { ...payload, _storageV2: true };
+  chrome.storage.local.set(fullPayload, () => {
+    const err = chrome.runtime.lastError;
+    setTimeout(() => {
+      selfWriteDepth = Math.max(0, selfWriteDepth - 1);
+    }, 120);
+    if (typeof callback === "function") callback(err || null);
+  });
+}
+
+async function loadConfigWithMigration() {
+  const keys = { ...DEFAULTS, _storageV2: false };
+  const localData = await readArea("local", keys);
+  if (
+    localData &&
+    (localData._storageV2 === true ||
+      (Array.isArray(localData.profiles) && localData.profiles.length > 0) ||
+      Boolean(localData.apiKey))
+  ) {
+    return localData;
+  }
+
+  const syncData = await readArea("sync", DEFAULTS);
+  const merged = syncData || localData || { ...DEFAULTS };
+  // One-time seamless migration from chrome.storage.sync → chrome.storage.local (10 MB quota, keys stay local)
+  if (syncData && (syncData.apiKey || (Array.isArray(syncData.profiles) && syncData.profiles.length > 0))) {
+    writeLocalConfig(merged);
+  }
+  return merged;
+}
 
 function $(id) {
   return document.getElementById(id);
@@ -182,6 +231,9 @@ function commitFormIntoCurrentProfile() {
   cur.model = $("model").value.trim() || DEFAULTS.model;
   cur.prompt = $("prompt").value.trim();
   cur.timeout = clampTimeout($("timeout").value);
+  if (cur.apiKey || cur.baseUrl !== DEFAULTS.baseUrl || cur.model !== DEFAULTS.model || cur.prompt !== DEFAULTS.prompt) {
+    delete cur._unsavedDraft;
+  }
 }
 
 function populateFormFromProfile(prof) {
@@ -222,6 +274,15 @@ function renderProfileTabs() {
 
 function buildStoragePayloadFromActive() {
   const active = getActiveProfileObj();
+  const cleanProfiles = profilesState.map((p) => ({
+    id: p.id,
+    name: p.name,
+    baseUrl: p.baseUrl,
+    apiKey: p.apiKey,
+    model: p.model,
+    prompt: p.prompt,
+    timeout: p.timeout,
+  }));
   return {
     baseUrl: active.baseUrl,
     apiKey: active.apiKey,
@@ -231,15 +292,21 @@ function buildStoragePayloadFromActive() {
     visionMode: $("visionMode").checked,
     translationPreview: $("translationPreview").checked,
     shortcutEnabled: $("shortcutEnabled").checked,
-    profiles: profilesState,
+    profiles: cleanProfiles,
     activeProfileId: active.id,
   };
 }
 
 function switchProfile(targetId) {
+  const prev = getActiveProfileObj();
   commitFormIntoCurrentProfile();
+  // Drop untouched blank draft profiles instead of persisting empty ghost profiles
+  if (prev && prev._unsavedDraft && !prev.apiKey && profilesState.length > 1) {
+    profilesState = profilesState.filter((p) => p.id !== prev.id);
+  }
   activeProfileId = targetId;
   const next = getActiveProfileObj();
+  if (!next) return;
   populateFormFromProfile(next);
   renderProfileTabs();
 
@@ -253,8 +320,12 @@ function switchProfile(targetId) {
     } catch (e) {}
   }
 
-  chrome.storage.sync.set(buildStoragePayloadFromActive(), () => {
-    void chrome.runtime.lastError;
+  writeLocalConfig(buildStoragePayloadFromActive(), (err) => {
+    if (err) {
+      $("status").textContent = "Failed to switch profile: " + err.message;
+      $("status").style.color = "var(--red)";
+      return;
+    }
     $("status").textContent = `Switched to "${next.name}"`;
     $("status").style.color = "var(--green)";
     setTimeout(() => {
@@ -275,6 +346,7 @@ function addNewProfile() {
     model: DEFAULTS.model,
     prompt: DEFAULTS.prompt,
     timeout: DEFAULTS.timeout,
+    _unsavedDraft: true,
   };
   profilesState.push(newProf);
   activeProfileId = newProf.id;
@@ -292,8 +364,12 @@ function deleteCurrentProfile() {
   populateFormFromProfile(next);
   renderProfileTabs();
 
-  chrome.storage.sync.set(buildStoragePayloadFromActive(), () => {
-    void chrome.runtime.lastError;
+  writeLocalConfig(buildStoragePayloadFromActive(), (err) => {
+    if (err) {
+      $("status").textContent = "Failed to delete profile: " + err.message;
+      $("status").style.color = "var(--red)";
+      return;
+    }
     $("status").textContent = "Profile deleted";
     $("status").style.color = "var(--muted)";
     setTimeout(() => {
@@ -319,6 +395,7 @@ function syncActiveChips() {
 }
 
 function refreshPermissionAndReadiness() {
+  const reqSeq = ++permCheckSeq;
   const rawUrl = $("baseUrl").value.trim() || DEFAULTS.baseUrl;
   const normalized = normalizeBaseUrl(rawUrl);
   const pattern = originPatternFor(normalized);
@@ -351,6 +428,7 @@ function refreshPermissionAndReadiness() {
 
   chrome.permissions.contains({ origins: [pattern] }, (granted) => {
     void chrome.runtime.lastError;
+    if (reqSeq !== permCheckSeq) return;
     if (granted) {
       permBadge.textContent = `✓ Access active · ${host}`;
       permBadge.dataset.tone = "ok";
@@ -379,14 +457,9 @@ function refreshPermissionAndReadiness() {
 // ═══════════════════════════════════════════════════════════════
 // Load & Save Settings
 // ═══════════════════════════════════════════════════════════════
-function loadSettings() {
-  chrome.storage.sync.get(DEFAULTS, (data) => {
-    if (chrome.runtime.lastError) {
-      console.error("[X AI Reply] Storage load error:", chrome.runtime.lastError.message);
-      $("status").textContent = "Failed to load settings.";
-      $("status").style.color = "var(--red)";
-      return;
-    }
+async function loadSettings() {
+  try {
+    const data = await loadConfigWithMigration();
 
     $("visionMode").checked = data.visionMode !== false;
     $("translationPreview").checked = data.translationPreview !== false;
@@ -398,7 +471,11 @@ function loadSettings() {
 
     populateFormFromProfile(getActiveProfileObj());
     renderProfileTabs();
-  });
+  } catch (e) {
+    console.error("[X AI Reply] Storage load error:", e);
+    $("status").textContent = "Failed to load settings.";
+    $("status").style.color = "var(--red)";
+  }
 }
 
 let saveResetTimer = null;
@@ -406,6 +483,7 @@ let saveResetTimer = null;
 function saveSettings() {
   commitFormIntoCurrentProfile();
   const active = getActiveProfileObj();
+  if (active) delete active._unsavedDraft;
   populateFormFromProfile(active);
   renderProfileTabs();
 
@@ -424,13 +502,13 @@ function saveSettings() {
     } catch (e) {}
   }
 
-  chrome.storage.sync.set(payload, () => {
+  writeLocalConfig(payload, (err) => {
     const status = $("status");
     const saveBtn = $("save");
     const saveLabel = $("saveLabel");
 
-    if (chrome.runtime.lastError) {
-      status.textContent = "Failed to save: " + chrome.runtime.lastError.message;
+    if (err) {
+      status.textContent = "Failed to save: " + err.message;
       status.style.color = "var(--red)";
       return;
     }
@@ -451,14 +529,17 @@ function saveSettings() {
 }
 
 function saveFeatureTogglesQuick() {
-  chrome.storage.sync.set(
+  writeLocalConfig(
     {
       visionMode: $("visionMode").checked,
       translationPreview: $("translationPreview").checked,
       shortcutEnabled: $("shortcutEnabled").checked,
     },
-    () => {
-      void chrome.runtime.lastError;
+    (err) => {
+      if (err) {
+        $("status").textContent = "Failed to save toggle: " + err.message;
+        $("status").style.color = "var(--red)";
+      }
     }
   );
 }
@@ -574,12 +655,19 @@ function testConnection() {
         }
 
         const msgObj = res.data?.choices?.[0]?.message;
+        const contentStr = Array.isArray(msgObj?.content)
+          ? msgObj.content
+              .map((p) => (typeof p === "string" ? p : p?.text || p?.content || ""))
+              .filter(Boolean)
+              .join(" ")
+          : msgObj?.content;
         const rawSample =
-          msgObj?.content ||
+          contentStr ||
           res.data?.choices?.[0]?.text ||
           (msgObj?.reasoning_content ? "(reasoning model active)" : "");
         const cleanSample = String(rawSample || "")
           .replace(/<think>[\s\S]*?<\/think>/gi, "")
+          .replace(/<thinking>[\s\S]*?<\/thinking>/gi, "")
           .trim()
           .slice(0, 60);
         const latencyLabel = res.latencyMs ? ` · ${res.latencyMs} ms` : "";
@@ -622,7 +710,12 @@ document.addEventListener("DOMContentLoaded", () => {
     const cur = getActiveProfileObj();
     if (cur) {
       cur.name = $("profileName").value.trim() || "Profile";
-      renderProfileTabs();
+      const activeTab = $("profileTabs")?.querySelector('.profile-tab[data-active="true"]');
+      if (activeTab) {
+        activeTab.textContent = cur.name;
+      } else {
+        renderProfileTabs();
+      }
     }
   });
 
@@ -702,4 +795,25 @@ document.addEventListener("DOMContentLoaded", () => {
 
   $("apiKey").addEventListener("input", refreshPermissionAndReadiness);
   $("prompt").addEventListener("input", syncActiveChips);
+
+  // Stay live-synced if user switches profile, tone, or feature toggles from Toolbar Popup
+  try {
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== "local" || selfWriteDepth > 0) return;
+      const syncableKeys = [
+        "baseUrl",
+        "apiKey",
+        "model",
+        "prompt",
+        "timeout",
+        "visionMode",
+        "translationPreview",
+        "shortcutEnabled",
+        "profiles",
+        "activeProfileId",
+      ];
+      if (!syncableKeys.some((k) => Object.prototype.hasOwnProperty.call(changes, k))) return;
+      loadSettings();
+    });
+  } catch (e) {}
 });

@@ -5,7 +5,7 @@
 
   <p>
     <img src="https://img.shields.io/badge/Manifest-V3-1d9bf0?style=flat-square" alt="Manifest V3" />
-    <img src="https://img.shields.io/badge/Version-5.3.0-4f46e5?style=flat-square" alt="Version 5.3.0" />
+    <img src="https://img.shields.io/badge/Version-5.3.1-4f46e5?style=flat-square" alt="Version 5.3.1" />
     <img src="https://img.shields.io/badge/Vision-Multimodal_Ready-059669?style=flat-square" alt="Vision Ready" />
     <img src="https://img.shields.io/badge/UI-Auto_Dark%2FLight_60fps-10b981?style=flat-square" alt="60fps UI" />
     <img src="https://img.shields.io/badge/API-OpenAI_Compatible-7c3aed?style=flat-square" alt="OpenAI Compatible" />
@@ -23,8 +23,8 @@
 ## Key Features
 
 ### 1. Multimodal Vision Mode (Charts, Screenshots & Infographics)
-- Automatically extracts attached tweet media (`pbs.twimg.com/media/...` normalized to crisp medium resolution) and sends them via OpenAI-compatible `image_url` payloads so multimodal models (**Grok**, **GPT-4o**, **Claude**, **Gemini**, **Qwen-VL**) can read candlestick charts, PnL screenshots, tables, and memes even when no `alt` text is provided.
-- **Automatic Text-Only Fallback**: If your configured model is text-only and returns HTTP `400` / `415` / `422` on image inputs, the service worker transparently retries with plain text so requests never break.
+- Automatically extracts attached tweet media (`pbs.twimg.com/media/...` normalized to sharp `large` resolution + `jpg` compatibility, fetched and inlined as base64 Data URIs via the background worker) and sends them via OpenAI-compatible `image_url` payloads so multimodal models (**Grok**, **GPT-4o**, **Claude**, **Gemini**, **Qwen-VL**) can read candlestick charts, PnL screenshots, tables, and memes even when no `alt` text is provided.
+- **Automatic 413 & Text-Only Fallback**: If a gateway rejects large inline payloads (`HTTP 413`), the service worker retries with lightweight remote URLs first; if the model is text-only (`HTTP 400` / `413` / `415` / `422`), it transparently falls back to plain text so requests never break.
 
 ### 2. Deep Multi-Layer Post Context Extraction
 - **Target Post Content**: Preserves exact spacing across inline links, `@mentions`, `$cashtags`, `#hashtags`, and emoji `alt` attributes.
@@ -118,7 +118,7 @@
 
 ```text
 AI-Reply-Extension/
-├── manifest.json     # Chrome Extension Manifest V3 configuration (v5.3.0)
+├── manifest.json     # Chrome Extension Manifest V3 configuration (v5.3.1)
 ├── background.js     # Service worker: API proxy, vision fallback, multilingual & anti-repetition engine
 ├── content.js        # X DOM & image extractor, Quick Angle UI, Alt+R shortcut, Draft.js paste handler
 ├── options.html      # Full Settings Dashboard UI (Multi-profile, smart toggles, Auto Dark/Light)
@@ -133,7 +133,7 @@ AI-Reply-Extension/
 ## Privacy & Security
 
 - **No Hardcoded Secrets:** Zero API keys, tokens, or private endpoints are included in this repository (`xxx` is used strictly as a documentation placeholder).
-- **Direct Local-to-API Architecture:** API keys (`chrome.storage.sync`) and recent reply variety history (`chrome.storage.local`) stay in your browser and communicate exclusively with your configured Base URL.
+- **Direct Local-to-API Architecture:** API keys, profiles, and recent reply variety history are stored locally in your browser (`chrome.storage.local`) and communicate exclusively with your configured Base URL.
 - **Human-in-the-Loop:** Replies are only inserted into the X editor — never auto-posted without your explicit click.
 
 ---
