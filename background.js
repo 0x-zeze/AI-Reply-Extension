@@ -1,7 +1,7 @@
 // Background Service Worker — CORS-free API proxy for X AI Reply.
-// v5.4.0 Global Edition: Deep Post + High-Res Vision Understanding, Mood & Politeness Register Adaptation,
-// Silent Read-Then-Reply Protocol, Post-Generation Anti-Slop/Quality Guard, Quote & Smart Regenerate Modes,
-// Vision Multimodal + Auto 413/Text Fallback, Anti-Repetition Memory, & Live English Translation Preview.
+// v5.4.1 Global Edition: Deep Post + Modal-Recovered Vision Understanding, HOOK-Locked Read-Then-Reply,
+// Post-Generation Off-Context & Anti-Slop Quality Guard, Mood & Politeness Register Adaptation,
+// Quote & Smart Regenerate Modes, Vision 413/Text Fallback, & Live English Translation Preview.
 
 const API_TIMEOUT_MS = 60000;
 const MIN_TIMEOUT_MS = 5000;
@@ -793,14 +793,18 @@ function analyzePostIntent(post, angle = "auto", visionAttached = false, mood = 
   }
 
   const hasMetrics =
-    /(\b\d+(?:[.,]\d+)?\s*(?:%|x|bps|k|m|b|t|ms|tps)\b|\$\d+(?:[.,]\d+)?\s*(?:k|m|b|t)?\b|\b(?:tvl|ath|volume|revenue|inflow|outflow|apr|apy|fdv|mcap|dau|mau)\b|(?:新高|突破|暴涨|急増|돌파|급등))/i.test(
+    /(\b\d+(?:[.,]\d+)?\s*(?:%|x|bps|k|m|b|t|ms|tps|digits?)\b|\b(?:double|triple)\s+digits?\b|\$\d+(?:[.,]\d+)?\s*(?:k|m|b|t)?\b|\b(?:tvl|ath|volume|revenue|inflow|outflow|apr|apy|fdv|mcap|dau|mau)\b|(?:新高|突破|暴涨|急増|돌파|급등))/i.test(
       full
+    );
+  const isMarketAction =
+    /(\b(?:bears?|bulls?|bullish|bearish|candles?|wick|dip|dips|bought the dip|breakout|pump|pumping|dump|short\s*squeeze|shorts|longs|support|resistance|positions?|bags?|2\s*digits|double\s*digits|ath|reversal|accumulation|retest)\b|\b(?:serok|pucuk|nyangkut|cuan)\b|(?:押し目|利確|損切|陽線|陰線|ショート|ロング|爆上げ|抄底|拉盘|砸盘|多头|空头|롱|숏|눌림목|불장))/i.test(
+      primary
     );
   const hasSubstantiveText = cleanPrimaryLen(p) >= 20;
   if (visionAttached) {
     if (hasSubstantiveText) {
       cues.push(
-        "TEXT + IMAGE SYNERGY: Read BOTH Post Text and the attached image(s) carefully. If an image is a chart, table, screenshot, or diagram with real data/text, combine that visual detail with the post text. If an image is just a project logo, banner, or decorative graphic, focus primarily on the main news/point in Post Text — NEVER ignore the text to comment solely on a logo shape or graphic design unless the text itself is about design."
+        "TEXT + IMAGE SYNERGY: Read BOTH Post Text and the attached image(s) carefully. If an image is a chart, candlestick, table, screenshot, or diagram with real data/text, combine that visual detail with the post text. If an image is just a project logo, banner, or decorative graphic, focus primarily on the main news/point in Post Text — NEVER ignore the text to comment solely on a logo shape or graphic design unless the text itself is about design."
       );
     } else {
       cues.push(
@@ -817,6 +821,12 @@ function analyzePostIntent(post, angle = "auto", visionAttached = false, mood = 
   } else if (hasMetrics || p.imageAlt) {
     cues.push(
       "DATA GROUNDING: Only cite numbers or details explicitly present in TWEET CONTEXT — never extrapolate or invent extra numbers."
+    );
+  }
+
+  if (isMarketAction && mood !== "sensitive" && mood !== "greeting") {
+    cues.push(
+      "REACTION CUE — MARKET / PRICE ACTION: The author is talking about a specific market move, candle, dip entry, bear squeeze, or price target (e.g. '2 digits', 'the dip', 'bears', breakout). Tie your reply EXPLICITLY to that specific move, dip entry, or target — NEVER output vague subjectless filler like 'where the good stuff starts' or 'just the beginning'."
     );
   }
 
@@ -893,15 +903,15 @@ function buildEntityAnchor(post, detected) {
 
   if (detected.tickers.length > 0 || mentionNames.length > 0) {
     return [
-      `TOPIC CONTEXT (${hints.join(" | ")}):`,
-      "- Stay clearly on-topic to this specific post, but do NOT force the ticker or project name into the opening words if it sounds robotic or SEO-like.",
-      "- Avoid raw '@handle' tags unless completely natural.",
+      `TOPIC ANCHOR (${hints.join(" | ")}):`,
+      "- Explicitly connect your reply to this post's actual subject, ticker, or specific claim/detail (price target, dip, candle, metric, feature, or news) so a reader immediately knows WHICH tweet you are replying to.",
+      "- Using 1–2 natural topic words or the ticker from the post is GOOD and expected for context — just add your own human reaction instead of copying a whole sentence. Avoid raw '@handle' tags.",
     ].join("\n");
   }
 
   return [
-    `TOPIC CONTEXT${hints.length ? ` (${hints.join(" | ")})` : ""}:`,
-    "- React directly to the specific thing happening in this post so it clearly belongs here, without sounding forced or robotic.",
+    `TOPIC ANCHOR${hints.length ? ` (${hints.join(" | ")})` : ""}:`,
+    "- Explicitly reference at least ONE concrete detail, noun, or claim from this post so your reply could NEVER be mistaken for a generic comment pasted on a random tweet.",
   ].join("\n");
 }
 
@@ -1052,20 +1062,25 @@ function buildLanguageAndFormatDirectives(lang, register = "casual", mood = "neu
       ? "Natural calm casing. No exclamation mark, no quotes, no emojis, no hashtags."
       : "All lowercase. No ending period, no exclamation mark, no quotes, no emojis, no hashtags ('?' is fine if asking).";
 
-  const twoLineInstruction =
+  const structuredInstruction =
     mood === "greeting"
       ? "Output ONLY the short greeting reply."
-      : "Output EXACTLY 2 lines:\nPOINT: <core point & mood of the post in <=10 words>\nREPLY: <ONLY your final reply in the target language>";
+      : [
+          "Output EXACTLY 3 lines:",
+          "INTENT: <what the author is saying & their exact mood in <=10 words>",
+          "HOOK: <1–2 exact concrete terms/details from THIS post you will react to (e.g. '2 digits target + buying the dip', '$524M in 24h', or a specific chart/post detail)>",
+          "REPLY: <ONLY your final natural reply in the target language — MUST explicitly connect to HOOK and pass the Blind-Paste Test>",
+        ].join("\n");
 
   if (lang.code === "zh-CN") {
     return {
       formatBlock: [
         "必须严格遵守【简体中文】回复规则：",
-        "1. 100%简体中文，1句简短真人反应（6–22字），只说1个具体念头，严禁英文整句。",
+        "1. 100%简体中文，1句完整自然的真人反应（8–24字），必须点出原帖里的具体细节（如抄底、两位数、K线、具体数字或事件），绝不能写放到哪条推文都通用的空话，严禁英文整句。",
         `2. ${punctHintZh}`,
-        "3. 对比参考 — ❌AI味：「这个合作听起来很棒，但真正的考验在于落地」 / ✅真人：「24小时冲到这个量有点离谱，看下周还能不能稳住」",
+        "3. 对比 — ❌空泛脱节：「好戏才刚开始」 / ❌AI腔：「听起来很棒，但关键看落地」 / ✅扣题真人：「这波回调敢加仓确实爽，冲回两位数空头真要麻了」",
       ].join("\n"),
-      userReminder: `先看懂原帖再只用【简体中文】回一句真人短话（6–22字，别像AI点评）。\n${twoLineInstruction}`,
+      userReminder: `先抓准原帖的具体细节再只用【简体中文】回一句紧扣上下文的真人短话（绝不写空泛万金油短语）。\n${structuredInstruction}`,
     };
   }
 
@@ -1073,11 +1088,11 @@ function buildLanguageAndFormatDirectives(lang, register = "casual", mood = "neu
     return {
       formatBlock: [
         "必須嚴格遵守【繁體中文】回覆規則：",
-        "1. 100%繁體中文，1句簡短真人反應（6–22字），只講1個具體念頭，嚴禁簡體字或英文整句。",
+        "1. 100%繁體中文，1句完整自然的真人反應（8–24字），必須扣住貼文裡的具體細節（如抄底、兩位數、K線或具體數字），絕不寫萬金油空話，嚴禁簡體字或英文整句。",
         `2. ${punctHintZh}`,
-        "3. 對比參考 — ❌AI味：「這個進展很值得關注，但關鍵還是看後續」 / ✅真人：「一天就衝到這數字有點扯，看後面撐不撐得住」",
+        "3. 對比 — ❌空泛脫節：「好戲才剛開始」 / ❌AI腔：「很值得關注，但關鍵看後續」 / ✅扣題真人：「這波回檔有接到的真的爽，拉回兩位數空軍大概全傻眼」",
       ].join("\n"),
-      userReminder: `先看懂貼文再只用【繁體中文】回一句真人短話（6–22字，自然口語）。\n${twoLineInstruction}`,
+      userReminder: `先抓準貼文的具體細節再只用【繁體中文】回一句緊扣上下文的真人短話（絕不寫空泛套話）。\n${structuredInstruction}`,
     };
   }
 
@@ -1090,17 +1105,17 @@ function buildLanguageAndFormatDirectives(lang, register = "casual", mood = "neu
           : "口調：公式・丁寧な投稿なので、硬すぎない「やわらかい口語〜軽い敬語（〜ですね / 〜かな / 〜すごいですね）」にする（馴れ馴れしすぎるタメ口は避ける）。";
     const jaGoodSample =
       register === "casual"
-        ? "24時間でこの規模はさすがにエグい"
-        : "24時間でこの数字はすごいですね、ここから定着するか気になる";
+        ? "あの押し目で拾えた人うまいな、2桁戻し普通にありそう"
+        : "この押し目でしっかり買えた人は強いですね、2桁復帰も見えてきそう";
     return {
       formatBlock: [
         "【日本語での返信ルール（絶対厳守）】",
-        "1. 100%自然な日本語のみ（英語の文章は絶対禁止）。8〜28文字の短い一言だけ。",
+        "1. 100%自然な日本語のみ（英語禁止）。10〜30文字で、必ず投稿内の具体的な言葉・数字・内容（押し目、2桁、陽線、機能名など）に絡めた1文にする。どの投稿にも貼れる曖昧な一言（「ここからが本番」等）は絶対NG。",
         `2. ${jaRegisterRule}`,
         `3. ${punctHintJa}`,
-        `4. 比較 — ❌AI臭い：「素晴らしい取り組みですね、今後の展開に注目です」 / ✅リアル：「${jaGoodSample}」`,
+        `4. 比較 — ❌文脈なし：「ここからが本番だね」 / ❌AI臭い：「今後の展開に注目です」 / ✅文脈一致：「${jaGoodSample}」`,
       ].join("\n"),
-      userReminder: `投稿の要点をつかんでから【日本語のみ】で自然な短い一言を書いて（8〜28文字、英語禁止）。\n${twoLineInstruction}`,
+      userReminder: `投稿の具体的なフックを掴んでから【日本語のみ】で文脈にピタッと合う自然な一言を書いて（英語禁止・曖昧な相槌禁止）。\n${structuredInstruction}`,
     };
   }
 
@@ -1113,17 +1128,17 @@ function buildLanguageAndFormatDirectives(lang, register = "casual", mood = "neu
           : "말투: 일반/공식 글이라 과하지 않고 편한 해요체(~네요 / ~같아요 / ~인가요)로 자연스럽게 (무례한 반말 금지).";
     const koGoodSample =
       register === "casual"
-        ? "하루 만에 이 규모면 진짜 빠르긴 하네"
-        : "하루 만에 이 정도 규모면 생각보다 훨씬 빠른데요";
+        ? "저 눌림목에서 추매한 사람들 진짜 달달하겠네 두 자릿수 가보자"
+        : "이번 눌림목에서 잘 주우신 분들 부럽네요 조만간 두 자릿수도 노려볼 만할 듯해요";
     return {
       formatBlock: [
         "【한국어 답글 규칙 (필수)】",
-        "1. 100% 자연스러운 한국어 한 줄 (6–28자, 영어 문장 절대 금지).",
+        "1. 100% 자연스러운 한국어 한 줄 (8–30자, 영어 금지). 원글의 구체적인 디테일(눌림목, 두 자릿수, 양봉, 수치 등)을 반드시 포함해 맥락이 딱 맞아야 함 ('이제 시작이네' 같은 모호한 아무말 절대 금지).",
         `2. ${koRegisterRule}`,
         "3. 마침표/느낌표/따옴표/이모지/해시태그 금지 (질문이면 '?' 가능).",
-        `4. 비교 — ❌AI 말투: '정말 주목할 만한 소식이네요, 앞으로가 기대됩니다' / ✅진짜 사람: '${koGoodSample}'`,
+        `4. 비교 — ❌맥락없음: '이제 진짜 시작이네요' / ❌AI말투: '주목할 만한 소식이네요' / ✅맥락일치: '${koGoodSample}'`,
       ].join("\n"),
-      userReminder: `원글 핵심을 먼저 파악하고 반드시 【한국어만】 써서 자연스러운 한 줄 답글을 써줘 (6–28자, 영어 금지).\n${twoLineInstruction}`,
+      userReminder: `원글의 구체적 포인트를 짚어서 반드시 【한국어만】으로 맥락에 딱 맞는 한 줄 답글을 써줘 (모호한 빈말 금지, 영어 금지).\n${structuredInstruction}`,
     };
   }
 
@@ -1136,17 +1151,17 @@ function buildLanguageAndFormatDirectives(lang, register = "casual", mood = "neu
           : "Gaya bahasa: santai khas warga X di HP ('sih', 'aja', 'udah', 'gak', 'emang', 'kayaknya' secukupnya kalau pas).";
     const idGoodSample =
       register === "semi_casual"
-        ? "baru 24 jam angkanya udah segitu, cepat juga pertumbuhannya"
-        : "baru 24 jam udah masuk segitu, lumayan kenceng juga nih";
+        ? "yang sempat ambil pas koreksi kemarin lumayan banget kalau beneran tembus dua digit"
+        : "yang serok pas dip kemarin senyum lebar sih kalau inj beneran balik 2 digit";
     return {
       formatBlock: [
         "ATURAN BALASAN BAHASA INDONESIA (WAJIB):",
-        "1. 100% Bahasa Indonesia natural, 1 celetukan pendek (4–12 kata), jangan balas pakai bahasa Inggris.",
+        "1. 100% Bahasa Indonesia natural, 1 kalimat utuh & nyambung (5–14 kata). WAJIB menyebut/nyambung ke detail spesifik di post (misal angka, dip, candle, 2 digit, nama fitur/topik) — DILARANG KERAS nulis kalimat gantung/generik kayak 'di sinilah bagian serunya dimulai' atau 'ini baru permulaan'.",
         `2. ${idRegisterRule}`,
         `3. ${punctHintLatin}`,
-        `4. Contoh — ❌AI kaku: 'langkah yang solid banget, tapi eksekusi jangka panjang tetap paling penting' / ✅Manusia: '${idGoodSample}'`,
+        `4. Contoh — ❌Gak nyambung: 'di sinilah yang seru dimulai' / ❌AI kaku: 'langkah yang solid, tapi eksekusi paling penting' / ✅Nyambung: '${idGoodSample}'`,
       ].join("\n"),
-      userReminder: `Pahami inti post dulu lalu balas 100% pakai 【Bahasa Indonesia】 yang natural (4–12 kata, dilarang bahasa Inggris).\n${twoLineInstruction}`,
+      userReminder: `Tangkap detail spesifik post dulu lalu balas 100% pakai 【Bahasa Indonesia】 yang benar-benar nyambung ke isi post (5–14 kata, jangan kalimat gantung/generik, dilarang bahasa Inggris).\n${structuredInstruction}`,
     };
   }
 
@@ -1154,12 +1169,15 @@ function buildLanguageAndFormatDirectives(lang, register = "casual", mood = "neu
     return {
       formatBlock: [
         "MANDATORY ENGLISH REPLY STYLE:",
-        "1. 100% natural everyday English — 1 short off-the-cuff line (4–12 words), ONE concrete human thought.",
+        "1. 100% natural everyday English — 1 complete, context-locked human line (6–15 words) with a clear subject tied directly to THIS post.",
         `2. ${punctHintLatin}`,
-        "3. Contrast — ❌AI slop: 'this partnership sounds great, but real adoption matters most' / ✅Human: '$524m in 24 hours is kinda wild if that pace actually holds'",
-        "4. Never use two-sided essay templates ('X sounds nice, but Y matters most') or AI clichés ('totally agree', 'spot on', 'worth watching', 'game changer', 'time will tell', 'execution is key').",
+        "3. BLIND-PASTE TEST (CRITICAL): Never write vague, subjectless fragments that could fit any random tweet!",
+        "   - ❌ BAD (vague/disconnected fragment): 'where the good stuff starts' / 'love to see it' / 'that's how it starts' / 'only the beginning'",
+        "   - ❌ BAD (AI contrast cliché): 'this candle looks nice, but real adoption matters most'",
+        "   - ✅ GOOD (context-locked human): 'catching that dip right before a push back to 2 digits feels so good' / 'that candle caught the bears sleeping after everyone faded the dip'",
+        "4. Zero AI filler ('totally agree', 'spot on', 'worth watching', 'game changer', 'time will tell', 'execution is key').",
       ].join("\n"),
-      userReminder: `Grasp the exact point first, then write 1 unpolished human 【English】 reply (4–12 words, zero AI clichés).\n${twoLineInstruction}`,
+      userReminder: `Lock onto the post's exact details first, then write 1 natural, complete 【English】 reply (6–15 words) that unmistakably fits THIS exact post — NEVER output a vague subjectless fragment.\n${structuredInstruction}`,
     };
   }
 
@@ -1167,10 +1185,10 @@ function buildLanguageAndFormatDirectives(lang, register = "casual", mood = "neu
     return {
       formatBlock: [
         "MANDATORY LANGUAGE & NATURAL STYLE:",
-        "1. Match the EXACT language of MAIN POST (including legible text inside attached images) — 1 short spontaneous line (4–12 words or 8–26 CJK chars).",
+        "1. Match the EXACT language of MAIN POST (including legible text inside attached images) — 1 complete, context-locked line (6–15 words or 10–30 CJK chars) referencing a concrete detail from the post.",
         "2. Match the post's politeness/mood naturally. For casual Latin scripts, use lowercase. No ending period, no exclamation mark, no quotes, no emojis, no hashtags.",
       ].join("\n"),
-      userReminder: `Identify the post's exact language and point first, then reply strictly in THAT same language.\n${twoLineInstruction}`,
+      userReminder: `Identify the post's exact language and concrete hook first, then reply strictly in THAT same language with clear context.\n${structuredInstruction}`,
     };
   }
 
@@ -1178,20 +1196,20 @@ function buildLanguageAndFormatDirectives(lang, register = "casual", mood = "neu
     return {
       formatBlock: [
         `MANDATORY LANGUAGE & FORMAT (${lang.label.toUpperCase()} / ${lang.nativeName}):`,
-        `1. Reply 100% in natural native ${lang.label} (${lang.nativeName}), 1 short spontaneous line (4–12 words). FORBIDDEN: English.`,
+        `1. Reply 100% in natural native ${lang.label} (${lang.nativeName}), 1 complete line (6–15 words) explicitly tied to a specific detail in the post. FORBIDDEN: English or vague generic phrases.`,
         "2. No ending period, no exclamation mark, no quotes, no emojis, no hashtags ('?' allowed if asking).",
       ].join("\n"),
-      userReminder: `Grasp the post first, then write 1 natural native ${lang.label} (${lang.nativeName}) reply — NEVER English.\n${twoLineInstruction}`,
+      userReminder: `Lock onto a specific post detail first, then write 1 natural native ${lang.label} (${lang.nativeName}) reply — NEVER English.\n${structuredInstruction}`,
     };
   }
 
   return {
     formatBlock: [
       `MANDATORY LANGUAGE & FORMAT (${lang.label.toUpperCase()}):`,
-      `1. Reply 100% in relaxed everyday ${lang.label}, 1 short spontaneous line (4–12 words). Do NOT switch to English.`,
+      `1. Reply 100% in relaxed everyday ${lang.label}, 1 complete line (6–15 words) explicitly referencing a concrete detail in the post. Do NOT switch to English or write vague fragments.`,
       `2. ${punctHintLatin}`,
     ].join("\n"),
-    userReminder: `Grasp the post first, then write 1 natural ${lang.label} reply — NEVER switch to English.\n${twoLineInstruction}`,
+    userReminder: `Lock onto a specific post detail first, then write 1 natural ${lang.label} reply — NEVER switch to English.\n${structuredInstruction}`,
   };
 }
 
@@ -1351,11 +1369,11 @@ function extractStructuredReply(rawText) {
     }
   }
 
-  // If the model started writing POINT: but never reached REPLY: (truncated), NEVER leak POINT: into X
-  if (/^\*{0,2}(?:POINT|INTI|要点)\*{0,2}\s*[:：]/i.test(lines[0])) {
+  // If the model started writing INTENT:/HOOK:/POINT: but never reached REPLY: (truncated), NEVER leak headers into X
+  if (/^\*{0,2}(?:INTENT|HOOK|POINT|INTI|要点)\*{0,2}\s*[:：]/i.test(lines[0])) {
     if (lines.length >= 2) {
       const candidate = lines[lines.length - 1];
-      if (!/^\*{0,2}(?:POINT|INTI|要点)\*{0,2}\s*[:：]/i.test(candidate)) {
+      if (!/^\*{0,2}(?:INTENT|HOOK|POINT|INTI|要点)\*{0,2}\s*[:：]/i.test(candidate)) {
         return candidate;
       }
     }
@@ -1385,6 +1403,196 @@ const VIDEO_CLAIM_RE =
 
 const UNSEEN_VISUAL_CLAIM_RE =
   /\b(?:nice|clean|great|crazy|wild|love\s+this|sick)\s+(?:chart|photo|pic|image|screenshot|graphic|logo)\b|\b(?:chartnya|gambarnya|fotonya)\s+(?:keren|bagus|gila)\b|画像見|チャート見/i;
+
+// Vague, subjectless filler phrases & subtweets that could be pasted under ANY random tweet ("where the good stuff starts", etc.)
+const GENERIC_DETACHED_RE =
+  /^(?:(?:this\s+is\s+|that'?s\s+)?(?:where|when|how)\s+the\s+(?:good|real|fun|best|crazy)\s+(?:stuff|part|game|thing|things|move|action)\s+(?:starts?|begins?|happens?|kicks?\s+in)|(?:you\s+)?love\s+to\s+see\s+(?:it|this)|big\s+if\s+true|this\s+is\s+the\s+way|that'?s\s+how\s+it\s+(?:always\s+)?starts|(?:can'?t|hard\s+to)\s+argue\s+with\s+(?:that|this)|real\s+ones\s+(?:already\s+)?know|if\s+you\s+know\s+you\s+know|iykyk|nothing\s+beats\s+this|this\s+hits\s+different|(?:just|only)\s+(?:the\s+beginning|getting\s+started)|timing\s+(?:really\s+)?is\s+everything(?:\s+here)?|we\s+are\s+so\s+back|happening\s+faster\s+than\s+expected|ini\s+baru\s+permulaan(?:\s+sih|\s+aja)?|di\s+sinilah\s+(?:bagian\s+)?(?:serunya|asiknya)\s+dimulai|ここからが本番(?:ですね|だね|だ)?|好戏才刚开始|好戲才剛開始|이제\s*(?:진짜\s*)?시작이네요?)[.!?\s]*$/i;
+
+const ABSTRACT_FILLER_WORDS = new Set([
+  "where", "when", "what", "which", "that", "thats", "this", "these", "those", "there", "here",
+  "good", "great", "best", "nice", "cool", "wild", "crazy", "insane", "real", "true", "right",
+  "stuff", "thing", "things", "part", "move", "moves", "game", "time", "times", "way", "ways",
+  "starts", "start", "started", "begins", "begin", "happens", "happen", "coming", "going", "getting",
+  "makes", "make", "sense", "feels", "feel", "looks", "look", "love", "seeing", "see", "know",
+  "always", "never", "really", "honestly", "literally", "lowkey", "kinda", "pretty", "actually",
+  "everything", "nothing", "everyone", "anyone", "people", "ones", "only", "just", "still", "even",
+  "back", "ahead", "soon", "now", "today", "already", "finally",
+  // Indonesian generic filler words
+  "baru", "mulai", "permulaan", "seru", "serunya", "bagian", "sinilah", "begini", "gitu", "gini",
+  "emang", "memang", "banget", "sangat", "keren", "mantap", "asli", "bener", "benar", "pasti",
+]);
+
+const TOPIC_STOPWORDS = new Set([
+  "the", "and", "for", "with", "that", "this", "from", "into", "over", "after", "before", "about",
+  "because", "while", "until", "where", "when", "what", "which", "who", "your", "yours", "their",
+  "them", "they", "have", "has", "had", "been", "were", "will", "would", "could", "should", "just",
+  "very", "much", "many", "more", "most", "some", "only", "also", "even", "still", "back", "make",
+  "made", "take", "took", "give", "gave", "gives", "hope", "look", "looks", "wait", "waits", "never",
+  "always", "yang", "untuk", "dengan", "dari", "pada", "dalam", "karena", "kalau", "akan", "sudah",
+  "udah", "bisa", "juga", "saya", "kamu", "mereka", "kita", "kami", "lebih", "hanya", "cuma",
+]);
+
+const MARKET_CONCEPT_GROUPS = [
+  ["bear", "bears", "short", "shorts", "squeeze", "squeezed", "faded", "fading"],
+  ["candle", "candles", "wick", "green", "pump", "bounce", "bounced", "ripping", "rip", "chart", "move"],
+  ["dip", "dips", "pullback", "retrace", "entry", "entries", "lows", "bottom", "added", "adding", "accumulating", "spot", "bags", "position", "positions"],
+  ["digit", "digits", "double", "target", "breakout", "ath", "highs"],
+];
+
+function extractPostTopicKeywords(post) {
+  const raw = [
+    post?.articleTitle,
+    post?.tweetText,
+    post?.selfThreadContinuation,
+    post?.pollOptions,
+    post?.quotedText,
+    post?.cardSummary,
+    post?.imageAlt,
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  if (!raw) return [];
+  const out = [];
+  const seen = new Set();
+
+  // 1. Keep $tickers (both "$inj" and "inj") and numbers ("2", "524m", "1.5b")
+  const tickerMatches = raw.match(/\$[A-Za-z][A-Za-z0-9]{1,9}\b/g) || [];
+  for (const t of tickerMatches) {
+    const clean = t.slice(1).toLowerCase();
+    if (!seen.has(clean)) {
+      seen.add(clean);
+      out.push(t);
+    }
+  }
+
+  const numMatches = raw.match(/\$?\d+(?:[.,]\d+)?(?:%|x|k|m|b|t|h|d)?\b/gi) || [];
+  for (const n of numMatches) {
+    const clean = n.toLowerCase();
+    if (!seen.has(clean)) {
+      seen.add(clean);
+      out.push(n);
+    }
+  }
+
+  // 2. Meaningful topic words (including 3-char domain nouns like "dip", "rwa", "tvl", "ath", "etf", "fee", "gas")
+  const KEEP_SHORT = new Set(["dip", "rwa", "tvl", "ath", "etf", "fee", "apr", "apy", "dex", "cex", "nft", "bug", "gas", "bot", "api", "app", "gpu", "cpu", "llm"]);
+  const words = raw
+    .replace(/https?:\/\/\S+/gi, " ")
+    .replace(/@[A-Za-z0-9_]+/g, " ")
+    .replace(/[^A-Za-z0-9\u00c0-\u024f\s]/g, " ")
+    .split(/\s+/)
+    .map((w) => w.trim().toLowerCase())
+    .filter((w) => w && !TOPIC_STOPWORDS.has(w) && (w.length >= 4 || KEEP_SHORT.has(w)));
+
+  for (const w of words) {
+    // Normalize elongated words like "sooooon" -> "soon"
+    const deElongated = w.replace(/(.)\1{2,}/g, "$1$1");
+    if (TOPIC_STOPWORDS.has(deElongated) || ABSTRACT_FILLER_WORDS.has(deElongated)) continue;
+    if (!seen.has(deElongated)) {
+      seen.add(deElongated);
+      out.push(deElongated);
+    }
+    if (out.length >= 14) break;
+  }
+
+  return out;
+}
+
+function isGenericOrDetachedReply(replyText, post, lang, options = {}) {
+  const clean = String(replyText || "").trim();
+  if (!clean || options.mood === "greeting") return false;
+
+  // 1. Direct match on known generic subtweets / filler ("where the good stuff starts", "love to see it", etc.)
+  if (GENERIC_DETACHED_RE.test(clean)) {
+    return true;
+  }
+
+  // Only run Latin lexical/grammar checks on Latin-script languages
+  if (lang?.nonLatin || lang?.cjk || lang?.korean) {
+    return false;
+  }
+
+  const words = clean
+    .toLowerCase()
+    .replace(/[^a-z0-9$\u00c0-\u024f'?\s,]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+
+  // 2. Dangling subordinate clause fragment (<8 words starting with where/when/because/while/until with no '?' and no comma)
+  if (
+    words.length <= 7 &&
+    !/[?,]/.test(clean) &&
+    /^(?:where|when|because|while|until|unless)\b/i.test(clean)
+  ) {
+    return true;
+  }
+
+  // 3. Zero-anchor check on substantive posts: if the post has concrete topic words ANDVision isn't the sole context,
+  // check whether the reply shares ANY stem/number/ticker/concept with the post OR uses concrete domain vocabulary
+  const hasVisionOnly = Boolean(options.visionAttached) && cleanPrimaryLen(post) < 20;
+  if (hasVisionOnly) return false;
+
+  const topicKeywords = extractPostTopicKeywords(post);
+  if (topicKeywords.length < 3) return false;
+
+  const normTopicLower = topicKeywords.map((t) => t.replace(/^\$/, "").toLowerCase());
+  const topicStems = normTopicLower
+    .filter((t) => t.length >= 4)
+    .map((t) => t.slice(0, 4));
+
+  // Expand market concept groups present in the post
+  const activeConceptWords = new Set();
+  for (const group of MARKET_CONCEPT_GROUPS) {
+    if (normTopicLower.some((tk) => group.some((g) => tk.startsWith(g) || g.startsWith(tk)))) {
+      for (const g of group) activeConceptWords.add(g);
+    }
+  }
+
+  const cleanReplyTokens = clean
+    .toLowerCase()
+    .replace(/[^a-z0-9\u00c0-\u024f\s]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+
+  let hasPostAnchor = false;
+  for (const rw of cleanReplyTokens) {
+    if (normTopicLower.includes(rw)) {
+      hasPostAnchor = true;
+      break;
+    }
+    if (rw.length >= 4 && topicStems.some((st) => rw.startsWith(st))) {
+      hasPostAnchor = true;
+      break;
+    }
+    if (activeConceptWords.has(rw)) {
+      hasPostAnchor = true;
+      break;
+    }
+    if (/^\d/.test(rw) && normTopicLower.some((tk) => /^\d/.test(tk))) {
+      hasPostAnchor = true;
+      break;
+    }
+  }
+
+  if (hasPostAnchor) return false;
+
+  // Reply has ZERO lexical/concept overlap with the post — flag as off_context if its content words are mostly generic filler!
+  const isEnFuncWord = (word) => {
+    EN_FUNC_STOP.lastIndex = 0;
+    return EN_FUNC_STOP.test(word);
+  };
+  const contentWords = cleanReplyTokens.filter(
+    (w) => w.length >= 3 && !TOPIC_STOPWORDS.has(w) && !isEnFuncWord(w)
+  );
+
+  if (contentWords.length === 0) return true;
+  const nonGenericWords = contentWords.filter((w) => !ABSTRACT_FILLER_WORDS.has(w));
+  if (nonGenericWords.length === 0) return true;
+  if (cleanReplyTokens.length <= 8 && nonGenericWords.length <= 1) return true;
+
+  return false;
+}
 
 function computeWordOverlapRatio(a, b) {
   const toWords = (s) =>
@@ -1420,6 +1628,10 @@ function auditGeneratedReply(replyText, post, lang, options = {}) {
 
   if (AI_SLOP_RE.test(clean)) {
     issues.push("ai_slop");
+  }
+
+  if (isGenericOrDetachedReply(clean, post, lang, options)) {
+    issues.push("off_context");
   }
 
   // Detect parroting (copying >=75% of meaningful words verbatim from the post)
@@ -1480,6 +1692,12 @@ function buildQualityFixMessages(draftReply, issues, lang, post, options = {}) {
   }
   if (issues.includes("ai_slop")) {
     fixNotes.push("Remove ALL AI clichés and two-sided contrast templates ('X sounds nice, but Y matters most', 'worth watching', 'setuju banget', '注目ですね'). Make it sound like a real human.");
+  }
+  if (issues.includes("off_context")) {
+    const keyTerms = extractPostTopicKeywords(post).slice(0, 6).join(", ");
+    fixNotes.push(
+      `CRITICAL — DISCONNECTED / VAGUE REPLY: The draft "${draftReply}" is generic filler with zero connection to the post! Write a complete, natural sentence that EXPLICITLY references or reacts to specific details in the post${keyTerms ? ` (such as: ${keyTerms})` : ""} so anyone reading immediately knows which post this replies to.`
+    );
   }
   if (issues.includes("parroting")) {
     fixNotes.push("Do NOT repeat/reword the post text back — react with a fresh human response or quick question instead.");

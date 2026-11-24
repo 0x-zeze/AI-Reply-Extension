@@ -1,7 +1,7 @@
-// X AI Reply — Content Script (v5.4.0 Global Edition)
+// X AI Reply — Content Script (v5.4.1 Global Edition)
 // GPU-composited "AI Reply" + Quick Angle Mini-Menu, Alt+R Shortcut,
-// Vision Image Extractor, Multi-Layer Context Engine (Community Notes, Top Replies, Quote Mode, Smart Regenerate),
-// English Translation Preview, & Anti-Double-Text Draft.js / Lexical Replace Handler.
+// Vision Image Extractor (including Modal Underlying-Tweet Media Recovery),
+// Multi-Layer Context Engine, English Translation Preview, & Draft.js / Lexical Replace Handler.
 
 const DEFAULT_BASE_URL = "https://api.x.ai/v1";
 const DEFAULT_MODEL = "grok-4.6-high";
@@ -2304,6 +2304,75 @@ function filterTopLevelTweets(nodes) {
   return nodes.filter((el) => !nodes.some((other) => other !== el && other.contains(el)));
 }
 
+// X's Reply Modal ([role="dialog"]) hides the target tweet's attached photos/charts/cards/polls to save space.
+// Match the modal's tweet back to its full <article> on the page behind the modal so Vision sees the actual chart/image!
+function enrichModalFromUnderlyingTweet(extracted, dialog) {
+  if (!extracted || !dialog || typeof document.querySelectorAll !== "function") {
+    return extracted;
+  }
+  const hasImgs = Array.isArray(extracted.imageUrls) && extracted.imageUrls.length > 0;
+  if (hasImgs && extracted.cardSummary && extracted.quotedText) {
+    return extracted;
+  }
+
+  const targetHandle = String(extracted.handle || "").trim().toLowerCase();
+  const normModalText = normalizeForCompare(extracted.tweetText || "");
+  if (!targetHandle && normModalText.length < 12) {
+    return extracted;
+  }
+
+  const pageScope = document.querySelector('[data-testid="primaryColumn"], main') || document;
+  const pageArticles = filterTopLevelTweets(
+    [
+      ...pageScope.querySelectorAll('article[data-testid="tweet"], article, div[data-testid="tweet"]'),
+    ].filter((el) => !dialog.contains(el) && !el.closest?.('[data-testid="sidebarColumn"], aside'))
+  );
+
+  const modalSample = normModalText.slice(0, Math.min(36, normModalText.length));
+
+  for (const art of pageArticles) {
+    const pageUser = parseUserBlock(art, findQuoteContainer(art));
+    const pageHandle = String(pageUser.handle || "").trim().toLowerCase();
+    if (targetHandle && pageHandle && pageHandle !== targetHandle) continue;
+
+    const pageData = extractDataFromArticle(art);
+    if (!pageData) continue;
+
+    const normPageText = normalizeForCompare(pageData.tweetText || "");
+    let isSameTweet = false;
+    if (modalSample.length >= 12 && normPageText.length >= 12) {
+      const pageSample = normPageText.slice(0, Math.min(36, normPageText.length));
+      isSameTweet = normPageText.includes(modalSample) || normModalText.includes(pageSample);
+    } else if (targetHandle && pageHandle === targetHandle && normModalText === normPageText) {
+      isSameTweet =
+        !extracted.timestamp || !pageData.timestamp || extracted.timestamp === pageData.timestamp;
+    }
+
+    if (!isSameTweet) continue;
+
+    const mergedImages = hasImgs ? extracted.imageUrls : pageData.imageUrls || [];
+    return {
+      ...extracted,
+      tweetText:
+        pageData.tweetText && pageData.tweetText.length > (extracted.tweetText || "").length
+          ? pageData.tweetText
+          : extracted.tweetText,
+      articleTitle: extracted.articleTitle || pageData.articleTitle,
+      pollOptions: extracted.pollOptions || pageData.pollOptions,
+      quotedText: extracted.quotedText || pageData.quotedText,
+      quotedLang: extracted.quotedLang || pageData.quotedLang,
+      cardSummary: extracted.cardSummary || pageData.cardSummary,
+      communityNote: extracted.communityNote || pageData.communityNote,
+      imageAlt: extracted.imageAlt || pageData.imageAlt,
+      imageUrls: mergedImages,
+      mainImageCount: hasImgs ? extracted.mainImageCount : pageData.mainImageCount || mergedImages.length,
+      mediaType: extracted.mediaType || pageData.mediaType,
+    };
+  }
+
+  return extracted;
+}
+
 function getPostContext(replyBox) {
   const emptyContext = {
     name: "",
@@ -2354,12 +2423,15 @@ function getPostContext(replyBox) {
         }
       }
 
-      const extracted = enrichIfTextMissing(
+      let extracted = enrichIfTextMissing(
         extractDataFromArticle(articles[chosenIdx]),
         replyBox,
         composerReplyTo
       );
       if (extracted) {
+        if (mode === "reply") {
+          extracted = enrichModalFromUnderlyingTweet(extracted, dialog);
+        }
         if (!extracted.replyTo && composerReplyTo) extracted.replyTo = composerReplyTo;
         extracted.composerMode = mode;
         if (chosenIdx > 0) {
@@ -2369,17 +2441,23 @@ function getPostContext(replyBox) {
       }
     }
 
-    const dialogFallback = enrichIfTextMissing(
+    let dialogFallback = enrichIfTextMissing(
       extractContextFromDialogNonArticle(dialog, replyBox),
       replyBox,
       composerReplyTo
     );
     if (dialogFallback) {
+      if (mode === "reply") {
+        dialogFallback = enrichModalFromUnderlyingTweet(dialogFallback, dialog);
+      }
       dialogFallback.composerMode = mode;
       return dialogFallback;
     }
-    const visibleDialog = contextFromVisibleComposer(replyBox, composerReplyTo);
+    let visibleDialog = contextFromVisibleComposer(replyBox, composerReplyTo);
     if (visibleDialog) {
+      if (mode === "reply") {
+        visibleDialog = enrichModalFromUnderlyingTweet(visibleDialog, dialog);
+      }
       visibleDialog.composerMode = mode;
       return visibleDialog;
     }
@@ -3057,13 +3135,13 @@ function cleanModelReply(rawText) {
     return "";
   }
 
-  // Defensive strip if structured POINT / REPLY lines ever slip through
+  // Defensive strip if structured INTENT / HOOK / POINT / REPLY lines ever slip through
   const replyLineMatch = cleaned.match(
     /(?:^|\n)\s*\*{0,2}(?:REPLY|BALASAN|返信|回复|回覆|답글)\*{0,2}\s*[:：]\s*\*{0,2}\s*([^\n]+)/i
   );
   if (replyLineMatch && replyLineMatch[1]) {
     cleaned = replyLineMatch[1];
-  } else if (/^\s*\*{0,2}(?:POINT|INTI|要点)\*{0,2}\s*[:：]/i.test(cleaned)) {
+  } else if (/^\s*\*{0,2}(?:INTENT|HOOK|POINT|INTI|要点)\*{0,2}\s*[:：]/i.test(cleaned)) {
     return "";
   }
 
